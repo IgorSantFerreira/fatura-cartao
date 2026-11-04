@@ -1,0 +1,8 @@
+# Dados de fatura são pessoais: o app só atende este computador e não manda estatísticas de uso.
+[server]
+address = "localhost"
+headless = false
+
+[browser]
+gatherUsageStats = false
+serverAddress = "localhost"

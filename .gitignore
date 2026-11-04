@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+# Categorias escolhidas por você: pessoais.
+regras_usuario.json
+regras_usuario.json.tmp
+# Fatura real usada nos testes: dado pessoal, não publicar.
+tests/dados/
+entrega_gs/
+assets/
