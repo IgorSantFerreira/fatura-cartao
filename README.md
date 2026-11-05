@@ -41,6 +41,57 @@ A aba mostra:
 
 Uma fatura guardada antes do fechamento fica marcada como **parcial** e não entra na média. Para completá-la, abra no app, depois do fechamento, a exportação nova (ou o mesmo arquivo, se nada mudou). Também dá para adicionar faturas antigas de uma vez ou remover uma fatura do histórico.
 
+## Tipo de gasto
+
+Além da categoria (em quê), cada lançamento tem um tipo (como): **recorrente** (cobrança fixa detectada), **parcelado**, **ocasional**, **encargo** (juros, multa, IOF), **estorno** ou **movimento da fatura** (pagamento e saldo anterior). O resumo por tipo fica em **Onde foi o dinheiro**, e o filtro por tipo em **Lançamentos**.
+
+Na aba **Mês a mês** também aparecem:
+
+- a evolução de uma categoria escolhida ao longo das faturas;
+- **Fora do seu padrão**: as categorias em que esta fatura passa do maior valor ou fica abaixo do menor valor das faturas completas anteriores.
+
+O "Fora do seu padrão" precisa de pelo menos 2 faturas completas anteriores, e "A classificar" e estornos ficam de fora. Se os meses fossem parecidos entre si, cada categoria ficaria fora do intervalo por acaso 2 vezes em n+1, onde n é o número de faturas anteriores. A tela mostra quantos avisos isso dá por acaso: com 2 faturas anteriores e 9 categorias, uns 6.
+
+## Bases de dados e faturas simuladas
+
+Na barra lateral, **Base de dados** escolhe entre:
+
+- **Minhas faturas**: as reais;
+- **Faturas simuladas**: para demonstração e para treinar o ML.
+
+Cada base tem o próprio histórico, metas, categorias escolhidas e rótulos. Cada uma tem também o próprio campo de arquivo: ao trocar de base, a fatura aberta não vai junto e precisa ser aberta de novo. Só assim ela é guardada na outra base. A base simulada fica em `%LOCALAPPDATA%\fatura_cartao\simuladas\`.
+
+**Atenção:** o app sempre começa em "Minhas faturas". Um arquivo simulado aberto ali é guardado como fatura real. Se isso acontecer, remova-o em **Mês a mês → Faturas guardadas**.
+
+Para criar faturas simuladas:
+
+- **Formato**: o mesmo do Nubank, com o cabeçalho `date,title,amount`. A data é `AAAA-MM-DD`. O valor pode ser `"12,90"` (vírgula decimal, entre aspas) ou `12.90`. Crédito tem valor negativo.
+- **Nome do arquivo**: `Nubank_AAAA-MM-DD.csv`, com a data de **vencimento**. Use uma fatura por mês, com vencimentos diferentes.
+- **Conteúdo realista**: inclua parcelas (`Loja X - Parcela 2/5`), assinaturas, `Pagamento recebido`, estornos e, principalmente, estabelecimentos que as regras do app não conhecem. É neles que o modelo mostra se aprende algo além das regras.
+- **Abrir no app**: escolha "Faturas simuladas" na barra lateral **antes** de abrir os arquivos. Faturas antigas podem ser adicionadas de uma vez em **Mês a mês → Adicionar faturas antigas**.
+
+### Gerador de faturas sintéticas
+
+`py ferramentas/gerar_faturas_sinteticas.py` cria 13 faturas 100% fictícias em `faturas_sinteticas/`, com um `gabarito.csv` (categoria certa de cada lançamento) e um `LEIA-ME.txt`. Para gerar mais meses, use `--meses 36`.
+
+- A semente é fixa: rodar de novo gera os mesmos arquivos.
+- O perfil de gasto é parecido com o de uma pessoa real, mas nenhum estabelecimento ou valor é copiado.
+- A pasta gerada fica fora do git, como todo CSV.
+
+## Rótulos para o ML (aba Classificar)
+
+Em **Conferir categorias**, marque "conferido" em cada estabelecimento depois de confirmar a categoria, **inclusive quando o app já acertou**. Só os conferidos viram exemplos para treinar e avaliar o modelo. Sem essa confirmação, o modelo apenas copiaria as regras do app.
+
+As escolhas feitas em "A classificar" e em "Corrigir" também contam como conferidas. O rótulo vale para o estabelecimento: todas as compras do mesmo lugar ficam com a mesma categoria.
+
+O botão **Baixar lançamentos rotulados** gera o CSV usado no notebook. Além da categoria conferida, o CSV traz:
+
+- `categoria_regras`: a categoria que as regras dariam sozinhas, usada como base de comparação;
+- `origem`: de onde veio o rótulo (confirmou a categoria do app, trocou na conferência, A classificar ou Corrigir), junto com a data;
+- `base`: de qual base de dados é o lançamento.
+
+A origem permite medir quantos rótulos só confirmaram a sugestão do app. A lista de conferência já vem com a categoria das regras escolhida, e isso puxa os rótulos para o lado das regras.
+
 ## Privacidade
 
 O app só atende este computador (`localhost`) e a coleta de estatísticas do Streamlit está desligada. O app não envia o CSV para lugar nenhum.
@@ -50,7 +101,9 @@ As faturas guardadas e as metas ficam em `%LOCALAPPDATA%\fatura_cartao\`, uma pa
 - `regras_usuario.json`: as suas escolhas de categoria;
 - `tests/dados/`: a fatura real usada nos testes.
 
-Para mudar onde ficam os arquivos, use as variáveis de ambiente `FATURA_HISTORICO`, `FATURA_METAS` e `FATURA_REGRAS`.
+Os rótulos de "Minhas faturas" ficam em `%LOCALAPPDATA%\fatura_cartao\rotulos.json`.
+
+Para mudar onde ficam os arquivos, use as variáveis de ambiente `FATURA_HISTORICO`, `FATURA_METAS`, `FATURA_REGRAS` e `FATURA_ROTULOS` (base "Minhas faturas") e `FATURA_SIMULADAS` (pasta da base simulada).
 
 ## Testes
 

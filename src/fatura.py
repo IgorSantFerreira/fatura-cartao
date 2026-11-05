@@ -592,6 +592,53 @@ def melhor_dia_de_compra(vencimento, fechamento, hoje):
     }
 
 
+MOVIMENTO = 'Movimento da fatura'
+ESTORNO = 'Estorno'
+ENCARGO = 'Encargo'
+PARCELADO = 'Parcelado'
+RECORRENTE = 'Recorrente'
+OCASIONAL = 'Ocasional'
+COMPORTAMENTOS = [RECORRENTE, PARCELADO, OCASIONAL, ENCARGO, ESTORNO, MOVIMENTO]
+
+
+def comportamentos(fatura, pares_recorrentes):
+    # Tipo de comportamento de cada lançamento, separado da categoria (o "o quê" x o "como").
+    # pares_recorrentes: {(chave, centavos)} das cobranças fixas detectadas (tabela de fixos).
+    tipos = []
+    for item in fatura.itertuples(index=False):
+        if not item.conta_no_gasto:
+            tipos.append(MOVIMENTO)
+        elif item.estorno:
+            tipos.append(ESTORNO)
+        elif item.categoria == ENCARGOS:
+            tipos.append(ENCARGO)
+        elif pd.notna(item.parcela_total):
+            tipos.append(PARCELADO)
+        elif (item.chave, int(item.centavos)) in pares_recorrentes:
+            tipos.append(RECORRENTE)
+        else:
+            tipos.append(OCASIONAL)
+    return pd.Series(tipos, index=fatura.index, name='comportamento')
+
+
+def resumo_comportamentos(fatura, tipos):
+    # Total por comportamento no gasto do período (movimentos da fatura não são gasto).
+    gasto = totais(fatura)['gasto']
+    linhas = []
+    for tipo in COMPORTAMENTOS:
+        if tipo == MOVIMENTO:
+            continue
+        do_tipo = fatura[fatura['conta_no_gasto'] & (tipos == tipo)]
+        if len(do_tipo) == 0:
+            continue
+        total = int(do_tipo['centavos'].sum())
+        percentual = None
+        if gasto > 0:
+            percentual = total * 100 / gasto
+        linhas.append([tipo, total, percentual, int(len(do_tipo))])
+    return pd.DataFrame(linhas, columns=['comportamento', 'centavos', 'percentual', 'lancamentos'])
+
+
 def gastinhos(fatura):
     # Compras do dia a dia (o mesmo conjunto do ritmo: sem parcelas, assinaturas, encargos e estornos).
     # "Pequena" = até a mediana dos próprios valores (a mediana inferior, que é o valor de uma compra real).

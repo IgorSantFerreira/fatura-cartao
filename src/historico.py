@@ -237,6 +237,47 @@ def media_anterior(montadas, vencimento_atual):
     return medias, anteriores
 
 
+ACIMA = 'acima'
+ABAIXO = 'abaixo'
+
+
+CATEGORIAS_FORA_DO_PADRAO = [ft.A_CLASSIFICAR, ft.ESTORNOS]
+
+
+def fora_do_padrao(montadas, vencimento_atual, valores_atuais):
+    # Categorias em que esta fatura fica acima do maior ou abaixo do menor valor das faturas completas anteriores.
+    # Sem parâmetro escolhido a dedo: se os meses fossem trocáveis entre si (nenhum é especial), a chance de um mês
+    # comum passar do maior de n anteriores é 1/(n+1), e a de ficar fora do intervalo (acima ou abaixo) é 2/(n+1).
+    # Com k categorias comparadas, espera-se perto de 2k/(n+1) avisos só por acaso.
+    # "A classificar" e estornos não são consumo: ficam de fora.
+    # Devolve (tabela, n, k) ou (None, n, 0) se faltar histórico (menos de 2 faturas completas anteriores).
+    anteriores = [item for item in montadas if item['completa'] and item['vencimento'] < vencimento_atual]
+    if len(anteriores) < 2:
+        return None, len(anteriores), 0
+    por_fatura = []
+    for item in anteriores:
+        valores = gasto_por_categoria(item['fatura'])
+        valores['Total'] = ft.totais(item['fatura'])['gasto']
+        por_fatura.append(valores)
+    linhas = []
+    comparadas = 0
+    for categoria in ft.CATEGORIAS + ['Total']:
+        if categoria in CATEGORIAS_FORA_DO_PADRAO:
+            continue
+        if categoria not in valores_atuais and all(categoria not in valores for valores in por_fatura):
+            continue
+        comparadas = comparadas + 1
+        historico_categoria = [int(valores.get(categoria, 0)) for valores in por_fatura]
+        atual = int(valores_atuais.get(categoria, 0))
+        maximo = max(historico_categoria)
+        minimo = min(historico_categoria)
+        if atual > maximo:
+            linhas.append([categoria, atual, minimo, maximo, ACIMA])
+        elif atual < minimo:
+            linhas.append([categoria, atual, minimo, maximo, ABAIXO])
+    return pd.DataFrame(linhas, columns=['categoria', 'atual', 'minimo', 'maximo', 'direcao']), len(anteriores), comparadas
+
+
 def comparar_com_media(valores_atuais, medias):
     # valores_atuais: {categoria: centavos} desta fatura (com 'Total'). Uma linha por categoria presente em um dos dois.
     linhas = []
@@ -270,12 +311,15 @@ def valores_ativos(valores_completa, valores_depois):
     # última completa (aberta) e, da última completa, os que não foram substituídos.
     # Um valor novo na aberta substitui o valor mais próximo da completa (reajuste, assinatura em dólar);
     # um valor da completa que ainda não apareceu na aberta continua (só não foi cobrado ainda).
+    # Devolve (valores ativos, {valor novo: valor antigo que ele substituiu}).
     restantes = sorted(valores_completa - valores_depois)
+    substituicoes = {}
     for novo in sorted(valores_depois - valores_completa):
         if restantes:
             mais_proximo = min(restantes, key=lambda valor: (abs(valor - novo), valor))
             restantes.remove(mais_proximo)
-    return set(valores_depois) | set(restantes)
+            substituicoes[novo] = mais_proximo
+    return set(valores_depois) | set(restantes), substituicoes
 
 
 def recorrentes(montadas):
@@ -306,6 +350,7 @@ def recorrentes(montadas):
     for valores in valores_por_fatura:
         chaves.update(valores)
     ativos = {}
+    substituicoes = {}
     for chave in chaves:
         valores_completa = set()
         if referencia >= 0:
@@ -314,7 +359,7 @@ def recorrentes(montadas):
         for valores in valores_por_fatura[referencia + 1:]:
             if chave in valores:
                 valores_depois = valores[chave]
-        ativos[chave] = valores_ativos(valores_completa, valores_depois)
+        ativos[chave], substituicoes[chave] = valores_ativos(valores_completa, valores_depois)
 
     def ativa(par):
         return par[1] in ativos.get(par[0], set())
@@ -339,7 +384,21 @@ def recorrentes(montadas):
             else:
                 linhas[par] = [item.estabelecimento, item.categoria, int(item.centavos), len(aparicoes.get(par, [])), ativa(par), 'assinatura conhecida']
 
-    tabela = pd.DataFrame(list(linhas.values()), columns=['estabelecimento', 'categoria', 'centavos', 'faturas', 'ativa', 'como'])
+    # Um fixo que mudou de valor na fatura aberta (reajuste da internet, conta com outro valor) não pode sumir
+    # do total: o valor novo entra no lugar do antigo, marcado para o usuário conferir.
+    # Como em todo fixo, o valor novo precisa aparecer uma vez só na fatura (três compras de 12,00 são hábito).
+    for chave, trocas in substituicoes.items():
+        for novo, antigo in trocas.items():
+            if (chave, antigo) in linhas and (chave, novo) not in linhas:
+                posicao, vezes, nome, categoria = aparicoes[(chave, novo)][-1]
+                if vezes != 1:
+                    continue
+                linhas[(chave, novo)] = [nome, categoria, novo, len(aparicoes[(chave, novo)]), ativa((chave, novo)), 'valor mudou (a confirmar)']
+
+    tabela = pd.DataFrame(
+          [[par[0]] + valores for par, valores in linhas.items()]
+        , columns=['chave', 'estabelecimento', 'categoria', 'centavos', 'faturas', 'ativa', 'como']
+    )
     tabela['por_ano'] = tabela['centavos'] * 12
     tabela = tabela.sort_values(['ativa', 'centavos', 'estabelecimento'], ascending=[False, False, True]).reset_index(drop=True)
     return tabela

@@ -14,15 +14,32 @@ import streamlit as st
 import fatura as ft
 import historico as hist
 import metas as mt
+import rotulos as rt
 
 
 PASTA_APP = Path(__file__).resolve().parent.parent
-ARQUIVO_REGRAS = os.environ.get('FATURA_REGRAS', str(PASTA_APP / 'regras_usuario.json'))
-# Histórico e metas ficam numa pasta local que não sincroniza com a nuvem: a pasta do app está no OneDrive.
+# Histórico, metas e rótulos ficam numa pasta local que não sincroniza com a nuvem: a pasta do app está no OneDrive.
 # (%LOCALAPPDATA% no Windows; fora dele, ~/.fatura_cartao.)
 PASTA_DADOS = Path(os.environ['LOCALAPPDATA']) / 'fatura_cartao' if os.environ.get('LOCALAPPDATA') else Path.home() / '.fatura_cartao'
-ARQUIVO_METAS = os.environ.get('FATURA_METAS', str(PASTA_DADOS / 'metas_usuario.json'))
-PASTA_HISTORICO = os.environ.get('FATURA_HISTORICO', str(PASTA_DADOS / 'historico'))
+MINHAS = 'Minhas faturas'
+SIMULADAS = 'Faturas simuladas'
+# Cada base tem seus próprios arquivos: faturas simuladas (demonstração, treino do ML) nunca se misturam com as reais.
+# "Minhas faturas" mantém os caminhos de antes (as categorias escolhidas continuam na pasta do app).
+PASTA_SIMULADAS = Path(os.environ.get('FATURA_SIMULADAS', str(PASTA_DADOS / 'simuladas')))
+CAMINHOS = {
+      MINHAS: {
+          'regras': os.environ.get('FATURA_REGRAS', str(PASTA_APP / 'regras_usuario.json'))
+        , 'metas': os.environ.get('FATURA_METAS', str(PASTA_DADOS / 'metas_usuario.json'))
+        , 'historico': os.environ.get('FATURA_HISTORICO', str(PASTA_DADOS / 'historico'))
+        , 'rotulos': os.environ.get('FATURA_ROTULOS', str(PASTA_DADOS / 'rotulos.json'))
+      }
+    , SIMULADAS: {
+          'regras': str(PASTA_SIMULADAS / 'regras_usuario.json')
+        , 'metas': str(PASTA_SIMULADAS / 'metas_usuario.json')
+        , 'historico': str(PASTA_SIMULADAS / 'historico')
+        , 'rotulos': str(PASTA_SIMULADAS / 'rotulos.json')
+      }
+}
 COR_BARRA = '#2a78d6'
 VOLTAR_AUTOMATICA = 'Voltar para a categoria automática'
 COMIDA_E_TRANSPORTE = [ft.COMIDA, ft.TRANSPORTE]
@@ -126,10 +143,28 @@ if st.get_option('server.address') not in ['localhost', '127.0.0.1'] or st.get_o
     )
     st.stop()
 
+with st.sidebar:
+    base = st.radio(
+          'Base de dados'
+        , [MINHAS, SIMULADAS]
+        , key='base'
+        , help='Cada base tem seu próprio histórico, metas, categorias escolhidas e rótulos. Use "Faturas simuladas" para dados de demonstração.'
+    )
+ARQUIVO_REGRAS = CAMINHOS[base]['regras']
+ARQUIVO_METAS = CAMINHOS[base]['metas']
+PASTA_HISTORICO = CAMINHOS[base]['historico']
+ARQUIVO_ROTULOS = CAMINHOS[base]['rotulos']
+if base == SIMULADAS:
+    st.markdown('**Base de dados: Faturas simuladas.** Tudo o que for guardado aqui fica separado das suas faturas reais.')
+else:
+    st.markdown('**Base de dados: Minhas faturas.**')
+
 if 'mensagem' in st.session_state:
     st.success(st.session_state.pop('mensagem'))
 
-arquivo = st.file_uploader('Escolha o CSV da fatura do cartão Nubank', type=['csv'])
+# Um campo de arquivo por base: trocar de base não leva a fatura aberta junto (senão ela seria guardada
+# no histórico da outra base sem ninguém pedir, misturando faturas reais e simuladas).
+arquivo = st.file_uploader('Escolha o CSV da fatura do cartão Nubank', type=['csv'], key='fatura_' + base)
 if arquivo is None:
     st.info('Exporte a fatura em CSV pelo Nubank e selecione o arquivo acima.')
     st.stop()
@@ -200,7 +235,7 @@ if vencimento is None:
 else:
     mensagem_historico = 'Com o fechamento igual ou depois do vencimento a fatura não é guardada no histórico.'
 if datas_validas:
-    marca = (hashlib.sha256(arquivo.getvalue()).hexdigest(), vencimento.isoformat(), fechamento.isoformat())
+    marca = (hashlib.sha256(arquivo.getvalue()).hexdigest(), vencimento.isoformat(), fechamento.isoformat(), base)
     processadas = st.session_state.setdefault('historico_processado', {})
     if marca not in processadas:
         try:
@@ -212,6 +247,39 @@ if datas_validas:
 entradas, erros_historico = hist.carregar_historico(PASTA_HISTORICO)
 montadas = hist.montar(entradas, regras_usuario)
 medias, anteriores = hist.media_anterior(montadas, vencimento if vencimento is not None else date.max)
+
+# Cobranças fixas: do histórico; sem histórico, só a fatura aberta (assinaturas pelo nome).
+bases_fixos = montadas
+if len(bases_fixos) == 0:
+    bases_fixos = [{'vencimento': None, 'rotulo': '', 'completa': False, 'fatura': fatura}]
+fixos = hist.recorrentes(bases_fixos)
+tipos = ft.comportamentos(fatura, set(zip(fixos['chave'], fixos['centavos'])))
+
+rotulos_usuario, erro_rotulos = rt.carregar_rotulos(ARQUIVO_ROTULOS)
+if erro_rotulos:
+    st.error(
+        ft.escapar_markdown(erro_rotulos)
+        + ' Os rótulos não estão sendo usados, e o app não grava nada por cima desse arquivo até ele ser corrigido.'
+    )
+ARQUIVO_ORIGENS = rt.caminho_origens(ARQUIVO_ROTULOS)
+origens_rotulos, erro_origens = rt.carregar_origens(ARQUIVO_ORIGENS)
+if erro_origens:
+    st.warning(
+        ft.escapar_markdown(erro_origens)
+        + ' A origem dos rótulos não será registrada até esse arquivo ser corrigido; os rótulos continuam valendo.'
+    )
+
+
+def gravar_rotulos(novos, origem_por_chave):
+    # Grava os rótulos e, se o arquivo de origens estiver bom, de onde veio cada rótulo novo ou trocado.
+    if erro_rotulos:
+        return
+    rt.salvar_rotulos(ARQUIVO_ROTULOS, novos)
+    if not erro_origens:
+        rt.salvar_origens(
+              ARQUIVO_ORIGENS
+            , rt.atualizar_origens(origens_rotulos, rotulos_usuario, novos, origem_por_chave, date.today())
+        )
 
 
 # ---------------------------------------------------------------- metas
@@ -278,6 +346,24 @@ with aba_resumo:
     if (resumo['centavos'] > 0).any():
         st.plotly_chart(grafico_barras(resumo, 'categoria'), width='stretch', config={'displayModeBar': False})
     st.dataframe(tabela_resumo(resumo, 'categoria', 'Categoria'), hide_index=True, width='stretch')
+
+    st.subheader('Tipo de gasto')
+    por_tipo = ft.resumo_comportamentos(fatura, tipos)
+    st.dataframe(
+          pd.DataFrame({
+              'Tipo': por_tipo['comportamento']
+            , 'Total': [ft.reais(valor) for valor in por_tipo['centavos']]
+            , '% do gasto': ['-' if valor is None or pd.isna(valor) else f'{valor:.1f}%'.replace('.', ',') for valor in por_tipo['percentual']]
+            , 'Lançamentos': por_tipo['lancamentos']
+          })
+        , hide_index=True
+        , width='stretch'
+    )
+    st.caption(
+        'A categoria diz em quê você gastou; o tipo diz como. Recorrente: cobrança fixa detectada (aba Mês a mês). '
+        + 'Parcelado: parcela de compra anterior. Ocasional: o resto das compras. Encargo: juros, multa e IOF. '
+        + 'Estorno: dinheiro de volta.'
+    )
 
     st.subheader('Dentro de cada categoria')
     for categoria in resumo['categoria']:
@@ -568,21 +654,66 @@ with aba_meses:
             + 'As faturas do histórico são reclassificadas com as suas categorias atuais.'
         )
 
+    st.subheader('Fora do seu padrão')
+    fora, quantas_anteriores, comparadas = hist.fora_do_padrao(montadas, vencimento if vencimento is not None else date.max, valores_desta)
+    if fora is None:
+        st.info(
+            f'Ainda não há histórico suficiente: são precisas 2 faturas completas anteriores a esta, e há {quantas_anteriores}.'
+        )
+    else:
+        if len(fora) == 0:
+            st.write(f'Nenhuma categoria saiu do intervalo das {quantas_anteriores} faturas completas anteriores.')
+        for linha in fora.itertuples(index=False):
+            if linha.direcao == hist.ACIMA and linha.maximo == 0:
+                st.markdown(
+                    f'- **{ft.escapar_markdown(linha.categoria)}**: {ft.reais_md(linha.atual)} nesta fatura; '
+                    + f'não apareceu nas {quantas_anteriores} faturas anteriores.'
+                )
+            elif linha.direcao == hist.ACIMA:
+                st.markdown(
+                    f'- **{ft.escapar_markdown(linha.categoria)}**: {ft.reais_md(linha.atual)} nesta fatura, '
+                    + f'acima do maior valor das {quantas_anteriores} faturas anteriores ({ft.reais_md(linha.maximo)}).'
+                )
+            else:
+                st.markdown(
+                    f'- **{ft.escapar_markdown(linha.categoria)}**: {ft.reais_md(linha.atual)} nesta fatura, '
+                    + f'abaixo do menor valor das {quantas_anteriores} faturas anteriores ({ft.reais_md(linha.minimo)}).'
+                )
+        esperados = f'{2 * comparadas / (quantas_anteriores + 1):.1f}'.replace('.', ',')
+        st.caption(
+            f'Esta fatura: {explicacao_desta}. Como funciona: compara com o menor e o maior valor de cada categoria nas faturas completas anteriores '
+            + '("A classificar" e estornos ficam de fora). '
+            + f'Se os meses fossem parecidos entre si, cada categoria ficaria fora desse intervalo por acaso 2 vezes em {quantas_anteriores + 1} '
+            + f'(acima do maior 1 vez, abaixo do menor 1 vez). Com {comparadas} categorias comparadas, '
+            + f'espere uns {esperados} avisos só por acaso: só leve a sério os que forem muitos a mais que isso ou que você reconheça. '
+            + 'Quanto mais faturas no histórico, menos avisos por acaso.'
+        )
+
     st.subheader('Gasto por fatura')
     if len(montadas) == 0:
         st.write('Nenhuma fatura guardada ainda.')
     else:
         mensal = hist.tabela_mensal(montadas)
         totais_mensais = mensal[mensal['categoria'] == 'Total']
-        rotulos = [rotulo if completa else rotulo + ' (parcial)' for rotulo, completa in zip(totais_mensais['fatura'], totais_mensais['completa'])]
+        rotulos_meses = [rotulo if completa else rotulo + ' (parcial)' for rotulo, completa in zip(totais_mensais['fatura'], totais_mensais['completa'])]
+        opcoes_evolucao = ['Total', 'Comida e bebida + Transporte'] + [categoria for categoria in ft.CATEGORIAS if categoria in set(mensal['categoria'])]
+        escolhida_evolucao = st.selectbox('Mostrar a evolução de', options=opcoes_evolucao, key='evolucao_categoria')
+        if escolhida_evolucao == 'Comida e bebida + Transporte':
+            categorias_evolucao = COMIDA_E_TRANSPORTE
+        else:
+            categorias_evolucao = [escolhida_evolucao]
+        valores_evolucao = []
+        for item in montadas:
+            da_fatura = mensal[(mensal['vencimento'] == item['vencimento']) & mensal['categoria'].isin(categorias_evolucao)]
+            valores_evolucao.append(int(da_fatura['centavos'].sum()))
         st.plotly_chart(
-              grafico_colunas(rotulos, list(totais_mensais['centavos']), [not completa for completa in totais_mensais['completa']])
+              grafico_colunas(rotulos_meses, valores_evolucao, [not completa for completa in totais_mensais['completa']])
             , width='stretch'
             , config={'displayModeBar': False}
             , key='grafico_meses'
         )
         colunas = {}
-        for item, rotulo in zip(montadas, rotulos):
+        for item, rotulo in zip(montadas, rotulos_meses):
             colunas[rotulo] = item['vencimento']
         linhas_tabela = []
         for categoria in ft.CATEGORIAS + ['Total']:
@@ -598,10 +729,6 @@ with aba_meses:
         st.caption('Gasto do período de cada fatura (sem pagamento e saldo anterior). "Parcial": guardada antes do fechamento.')
 
     st.subheader('Assinaturas e gastos fixos')
-    bases = montadas
-    if len(bases) == 0:
-        bases = [{'vencimento': None, 'rotulo': '', 'completa': False, 'fatura': fatura}]
-    fixos = hist.recorrentes(bases)
     if len(fixos) == 0:
         st.write('Nenhuma cobrança fixa encontrada.')
     else:
@@ -627,6 +754,7 @@ with aba_meses:
         '"Repete todo mês": mesmo estabelecimento e mesmo valor, uma vez por fatura, em 2 ou mais faturas seguidas do histórico. '
         + '"Assinatura conhecida": categoria Assinaturas. '
         + '"Ainda cobrada": apareceu na última fatura completa ou depois dela (uma fatura ainda aberta não tira nada do total). '
+        + '"Valor mudou (a confirmar)": cobrança fixa que veio com outro valor na fatura aberta; ela entra no total no lugar do valor antigo. '
         + 'Parcelas, juros e estornos não entram. O total soma só o que ainda é cobrado.'
     )
     if len(montadas) < 2:
@@ -667,6 +795,9 @@ with aba_meses:
             # Com outro vencimento: uma "duplicada" pode ter sido desta que saiu, então tenta de novo.
             processado = st.session_state.get('historico_processado', {})
             for marca_processada, (situacao, texto) in list(processado.items()):
+                if marca_processada[3] != base:
+                    # Outra base de dados: a remoção não mexeu nela.
+                    continue
                 if marca_processada[1] == remover_vencimento and situacao in [hist.ERRO, hist.CONFLITO]:
                     del processado[marca_processada]
                 elif marca_processada[1] != remover_vencimento and situacao == hist.DUPLICADA:
@@ -685,7 +816,7 @@ with aba_meses:
               'CSVs de faturas anteriores do Nubank (o vencimento vem do nome, Nubank_AAAA-MM-DD.csv)'
             , type=['csv']
             , accept_multiple_files=True
-            , key='importar_antigas'
+            , key='importar_antigas_' + base
         )
         if st.button('Guardar no histórico', disabled=not antigas):
             resultados = []
@@ -735,28 +866,130 @@ with aba_classificar:
                 salvar = st.form_submit_button('Salvar categorias')
             if salvar:
                 novas = dict(regras_usuario)
+                novos_rotulos = dict(rotulos_usuario)
                 mudou = 0
                 for chave, nome, descricao, centavos, total, quantidade in grupos:
                     escolha = st.session_state['classificar_' + chave]
                     if escolha != ft.A_CLASSIFICAR:
                         novas = ft.aplicar_escolha(novas, descricao, centavos, escolha)
+                        # A escolha do usuário também é rótulo humano para o ML.
+                        novos_rotulos = rt.registrar_escolha(novos_rotulos, fatura, chave, escolha)
                         mudou = mudou + 1
                 if mudou == 0:
                     st.info('Nenhuma categoria escolhida.')
                 else:
                     ft.salvar_regras_usuario(ARQUIVO_REGRAS, novas)
+                    gravar_rotulos(novos_rotulos, {chave: rt.ORIGEM_A_CLASSIFICAR for chave in novos_rotulos})
                     st.session_state['mensagem'] = f'{mudou} estabelecimento(s) classificado(s).'
                     st.rerun()
 
+        st.subheader('Conferir categorias (rótulos para o ML)')
+        if erro_rotulos:
+            st.error('Corrija ou apague o arquivo de rótulos para poder conferir: ' + ft.escapar_markdown(ARQUIVO_ROTULOS))
+        else:
+            itens_conferir = rt.para_conferir(fatura, rotulos_usuario)
+            # O Streamlit guarda o valor de cada campo pela key (no servidor e no navegador) e ignora value/index
+            # depois da primeira vez. Se rótulos ou regras mudaram por outro caminho (A classificar, Corrigir,
+            # outra base, outra fatura), os campos recebem de novo o que está gravado, pelo session_state:
+            # só assim o navegador também troca o que mostra (apagar a key não basta, o navegador manteria o valor
+            # antigo e a próxima conferência desfaria em silêncio o que foi gravado).
+            assinatura = repr((base, arquivo.name, hashlib.sha256(arquivo.getvalue()).hexdigest(), sorted(rotulos_usuario.items()), sorted(regras_usuario.items())))
+            if st.session_state.get('assinatura_conferencia') != assinatura:
+                for chave_estado in list(st.session_state.keys()):
+                    if str(chave_estado).startswith('conferir_'):
+                        del st.session_state[chave_estado]
+                for item in itens_conferir.itertuples(index=False):
+                    st.session_state['conferir_categoria_' + item.chave] = item.categoria_sugerida
+                    st.session_state['conferir_ok_' + item.chave] = bool(item.conferido)
+                st.session_state['assinatura_conferencia'] = assinatura
+            # Campo que o Streamlit descartou (não foi desenhado numa execução) volta com o valor gravado.
+            for item in itens_conferir.itertuples(index=False):
+                if 'conferir_categoria_' + item.chave not in st.session_state:
+                    st.session_state['conferir_categoria_' + item.chave] = item.categoria_sugerida
+                if 'conferir_ok_' + item.chave not in st.session_state:
+                    st.session_state['conferir_ok_' + item.chave] = bool(item.conferido)
+            st.write(
+                'Marque "conferido" nos estabelecimentos cuja categoria você confirmou, mesmo quando o app já acertou. '
+                + 'Só os conferidos viram exemplos para treinar e avaliar o modelo, e a categoria escolhida passa a valer no app.'
+            )
+            st.caption(
+                f'{int(itens_conferir["conferido"].sum())} de {len(itens_conferir)} estabelecimentos desta fatura conferidos. '
+                + 'Pagamentos, saldo anterior, estornos e juros/multas/IOF ficam de fora.'
+            )
+            with st.expander('Conferir estabelecimentos desta fatura', expanded=bool((~itens_conferir['conferido']).any())):
+                with st.form('form_conferir'):
+                    for item in itens_conferir.itertuples(index=False):
+                        coluna_nome, coluna_categoria, coluna_ok = st.columns([4, 3, 1])
+                        coluna_nome.markdown(
+                            f'**{ft.escapar_markdown(item.estabelecimento)}**  \n'
+                            + f'{ft.reais_md(item.centavos)} em {item.lancamentos} lançamento(s); hoje: {ft.escapar_markdown(item.categoria_atual)}'
+                        )
+                        opcoes_conferir = rt.CATEGORIAS_ROTULO + [ft.A_CLASSIFICAR]
+                        # Valor inicial vem do session_state (preenchido acima); sem value/index para não conflitar.
+                        coluna_categoria.selectbox(
+                              f'Categoria de {ft.escapar_markdown(item.estabelecimento)}'
+                            , options=opcoes_conferir
+                            , key='conferir_categoria_' + item.chave
+                            , label_visibility='collapsed'
+                        )
+                        coluna_ok.checkbox('Conferido', key='conferir_ok_' + item.chave)
+                    salvar_conferencia = st.form_submit_button('Salvar conferência')
+                if salvar_conferencia:
+                    escolhas = {}
+                    for item in itens_conferir.itertuples(index=False):
+                        escolhas[item.chave] = (
+                              st.session_state['conferir_categoria_' + item.chave]
+                            , st.session_state['conferir_ok_' + item.chave]
+                        )
+                    try:
+                        novos_rotulos, novas_regras, conferidos, removidos = rt.aplicar_conferencia(rotulos_usuario, regras_usuario, itens_conferir, escolhas)
+                    except ValueError as erro:
+                        st.error(ft.escapar_markdown(str(erro)))
+                    else:
+                        origem_por_chave = {}
+                        for item in itens_conferir.itertuples(index=False):
+                            if escolhas[item.chave][0] == item.categoria_atual:
+                                origem_por_chave[item.chave] = rt.ORIGEM_CONFIRMOU
+                            else:
+                                origem_por_chave[item.chave] = rt.ORIGEM_TROCOU
+                        gravar_rotulos(novos_rotulos, origem_por_chave)
+                        ft.salvar_regras_usuario(ARQUIVO_REGRAS, novas_regras)
+                        st.session_state['mensagem'] = f'{conferidos} estabelecimento(s) conferido(s), {removidos} rótulo(s) removido(s).'
+                        st.rerun()
+
+            conjunto = rt.conjunto_rotulado(montadas, rotulos_usuario, origens_rotulos, 'simuladas' if base == SIMULADAS else 'minhas')
+            st.caption(
+                f'Na base "{base}": {len(conjunto)} lançamento(s) rotulado(s), de {conjunto["chave"].nunique()} estabelecimento(s), '
+                + f'em {conjunto["vencimento"].nunique()} fatura(s) do histórico.'
+            )
+            if len(conjunto) > 0:
+                por_rotulo = conjunto.groupby('rotulo').agg(lancamentos=('chave', 'size'), estabelecimentos=('chave', 'nunique')).reset_index()
+                st.dataframe(
+                      pd.DataFrame({
+                          'Categoria': por_rotulo['rotulo']
+                        , 'Lançamentos': por_rotulo['lancamentos']
+                        , 'Estabelecimentos': por_rotulo['estabelecimentos']
+                      })
+                    , hide_index=True
+                    , width='stretch'
+                )
+                st.download_button(
+                      'Baixar lançamentos rotulados (CSV)'
+                    , data=conjunto.to_csv(index=False).encode('utf-8')
+                    , file_name='rotulados_' + ('simuladas' if base == SIMULADAS else 'minhas') + '.csv'
+                    , mime='text/csv'
+                    , key='baixar_rotulados'
+                )
+
         st.subheader('Corrigir a categoria de um estabelecimento')
         estabelecimentos = fatura.drop_duplicates('chave')
-        rotulos = {}
+        nomes_corrigir = {}
         for item in estabelecimentos.itertuples(index=False):
-            rotulos[item.chave] = f'{item.estabelecimento} (hoje: {item.categoria})'
+            nomes_corrigir[item.chave] = f'{item.estabelecimento} (hoje: {item.categoria})'
         chave_escolhida = st.selectbox(
               'Estabelecimento'
-            , options=list(rotulos.keys())
-            , format_func=rotulos.get
+            , options=list(nomes_corrigir.keys())
+            , format_func=nomes_corrigir.get
             , key='corrigir_estabelecimento'
         )
         exemplo = estabelecimentos[estabelecimentos['chave'] == chave_escolhida].iloc[0]
@@ -768,9 +1001,12 @@ with aba_classificar:
             novas = dict(regras_usuario)
             if nova_categoria == VOLTAR_AUTOMATICA:
                 novas.pop(chave_escolhida, None)
+                novos_rotulos = rt.registrar_escolha(rotulos_usuario, fatura, chave_escolhida, None)
             else:
                 novas = ft.aplicar_escolha(novas, exemplo['descricao'], int(exemplo['centavos']), nova_categoria)
+                novos_rotulos = rt.registrar_escolha(rotulos_usuario, fatura, chave_escolhida, nova_categoria)
             ft.salvar_regras_usuario(ARQUIVO_REGRAS, novas)
+            gravar_rotulos(novos_rotulos, {chave_escolhida: rt.ORIGEM_CORRIGIR})
             st.session_state['mensagem'] = f'Categoria de {ft.escapar_markdown(exemplo["estabelecimento"])} salva.'
             st.rerun()
 
@@ -782,9 +1018,13 @@ with aba_classificar:
 
 with aba_lancamentos:
     filtro = st.multiselect('Filtrar categorias', options=ft.CATEGORIAS, key='filtro_categorias')
-    lista = fatura
+    filtro_tipo = st.multiselect('Filtrar tipo de gasto', options=ft.COMPORTAMENTOS, key='filtro_tipos')
+    selecao = pd.Series(True, index=fatura.index)
     if filtro:
-        lista = fatura[fatura['categoria'].isin(filtro)]
+        selecao = selecao & fatura['categoria'].isin(filtro)
+    if filtro_tipo:
+        selecao = selecao & tipos.isin(filtro_tipo)
+    lista = fatura[selecao]
     parcela = []
     for item in lista.itertuples(index=False):
         if pd.isna(item.parcela_total):
@@ -797,6 +1037,7 @@ with aba_lancamentos:
             , 'Descrição': lista['descricao']
             , 'Categoria': lista['categoria']
             , 'Subcategoria': lista['subcategoria']
+            , 'Tipo': tipos[selecao]
             , 'Valor': [ft.reais(valor) for valor in lista['centavos']]
             , 'Parcela': parcela
             , 'Quem classificou': lista['origem']

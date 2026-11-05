@@ -10,5 +10,16 @@ tests/dados/
 historico/
 metas_usuario.json
 metas_usuario.json.tmp
+# Nenhum dado vai para o GitHub: só código e documentação. Qualquer CSV (faturas reais, sintéticas,
+# gabaritos, rotulados) fica fora; as sintéticas são recriadas pelo ferramentas/gerar_faturas_sinteticas.py.
+*.csv
+*.xlsx
+faturas_sinteticas/
+.ipynb_checkpoints/
+# Rótulos e o CSV de lançamentos rotulados (baixado pelo app para o notebook): pessoais.
+rotulos.json
+rotulos_origem.json
+*.json.tmp
+rotulados_*.csv
 entrega_gs/
 assets/
