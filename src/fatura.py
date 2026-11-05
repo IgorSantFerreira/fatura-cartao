@@ -217,7 +217,11 @@ def ler_csv(conteudo):
         separador = ';'
 
     leitor = csv.reader(io.StringIO(texto), delimiter=separador)
-    linhas = list(leitor)
+    try:
+        linhas = list(leitor)
+    except csv.Error as erro:
+        # csv.Error não é ValueError: sem isto, uma aspa sem fechar derrubaria o app.
+        raise ValueError(f'O arquivo não é um CSV válido ({erro}).') from None
 
     colunas = []
     for nome in linhas[0]:
@@ -518,14 +522,103 @@ def parcelas_futuras(fatura):
     return parceladas[['data', 'estabelecimento', 'categoria', 'parcela_atual', 'parcela_total', 'centavos', 'restantes', 'centavos_futuros']].reset_index(drop=True)
 
 
-def subtrair_um_mes(dia):
-    ano = dia.year
-    mes = dia.month - 1
-    if mes == 0:
-        mes = 12
-        ano = ano - 1
+def somar_meses(dia, meses):
+    # Mesmo dia do mês, N meses depois (ou antes, se negativo); 31/01 + 1 mês = 28/02 ou 29/02.
+    indice = dia.year * 12 + (dia.month - 1) + meses
+    ano = indice // 12
+    mes = indice % 12 + 1
     ultimo = calendar.monthrange(ano, mes)[1]
     return date(ano, mes, min(dia.day, ultimo))
+
+
+def subtrair_um_mes(dia):
+    return somar_meses(dia, -1)
+
+
+MESES_ABREVIADOS = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
+
+
+def nome_mes(dia):
+    return f'{MESES_ABREVIADOS[dia.month - 1]}/{dia.year}'
+
+
+def parcelas_por_mes(fatura, vencimento=None):
+    # Quanto das próximas faturas já está comprometido com as parcelas desta.
+    # Uma compra na parcela 3/10 cai nas 7 faturas seguintes; supõe parcelas de mesmo valor.
+    futuras = parcelas_futuras(fatura)
+    por_ordem = {}
+    for item in futuras.itertuples(index=False):
+        for ordem in range(1, int(item.restantes) + 1):
+            centavos, compras = por_ordem.get(ordem, (0, 0))
+            por_ordem[ordem] = (centavos + int(item.centavos), compras + 1)
+    linhas = []
+    for ordem in sorted(por_ordem):
+        centavos, compras = por_ordem[ordem]
+        vence = None
+        rotulo = f'Daqui a {ordem} fatura(s)'
+        if vencimento is not None:
+            vence = somar_meses(vencimento, ordem)
+            rotulo = nome_mes(vence)
+        linhas.append([ordem, vence, rotulo, centavos, compras])
+    return pd.DataFrame(linhas, columns=['ordem', 'vencimento', 'fatura', 'centavos', 'compras'])
+
+
+def melhor_dia_de_compra(vencimento, fechamento, hoje):
+    # Nubank: compra feita no dia do fechamento já vai para a fatura seguinte, então esse é o melhor dia.
+    # Devolve o próximo fechamento a partir de hoje, o vencimento em que essa compra cai e o prazo,
+    # comparados com comprar na véspera. O fechamento de cada mês fica à mesma distância do vencimento
+    # daquele mês (como em ciclo()): com vencimento dia 5, o fechamento cai no mês anterior.
+    antecedencia = vencimento - fechamento
+
+    def fechamento_do_mes(meses):
+        return somar_meses(vencimento, meses) - antecedencia
+
+    meses = 0
+    while fechamento_do_mes(meses) < hoje:
+        meses = meses + 1
+    while fechamento_do_mes(meses - 1) >= hoje:
+        meses = meses - 1
+    dia = fechamento_do_mes(meses)
+    vence = somar_meses(vencimento, meses + 1)
+    vespera = dia - timedelta(days=1)
+    vence_vespera = somar_meses(vencimento, meses)
+    return {
+          'dia': dia
+        , 'vencimento': vence
+        , 'prazo_dias': (vence - dia).days
+        , 'vespera': vespera
+        , 'vencimento_vespera': vence_vespera
+        , 'prazo_vespera_dias': (vence_vespera - vespera).days
+    }
+
+
+def gastinhos(fatura):
+    # Compras do dia a dia (o mesmo conjunto do ritmo: sem parcelas, assinaturas, encargos e estornos).
+    # "Pequena" = até a mediana dos próprios valores (a mediana inferior, que é o valor de uma compra real).
+    compras = fatura[no_ritmo(fatura) & (fatura['centavos'] > 0)]
+    if len(compras) < 2:
+        return None
+    valores = sorted(int(valor) for valor in compras['centavos'])
+    corte = valores[(len(valores) - 1) // 2]
+    pequenas = compras[compras['centavos'] <= corte]
+    total = int(pequenas['centavos'].sum())
+    gasto = totais(fatura)['gasto']
+    percentual = None
+    if gasto > 0:
+        percentual = total * 100 / gasto
+    linhas = []
+    for chave, grupo in pequenas.groupby('chave', sort=False):
+        linhas.append([grupo['estabelecimento'].iloc[0], grupo['categoria'].iloc[0], int(len(grupo)), int(grupo['centavos'].sum())])
+    lugares = pd.DataFrame(linhas, columns=['estabelecimento', 'categoria', 'compras', 'centavos'])
+    lugares = lugares.sort_values(['centavos', 'compras', 'estabelecimento'], ascending=[False, False, True]).reset_index(drop=True)
+    return {
+          'corte': corte
+        , 'quantidade': int(len(pequenas))
+        , 'total_compras': int(len(compras))
+        , 'centavos': total
+        , 'percentual_do_gasto': percentual
+        , 'lugares': lugares
+    }
 
 
 def ciclo(vencimento, fechamento=None):

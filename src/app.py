@@ -1,20 +1,31 @@
 # Tela do app. Rodar com abrir_app.bat (ou: py -m streamlit run src/app.py).
 
+import hashlib
 import os
 from datetime import date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 import fatura as ft
+import historico as hist
+import metas as mt
 
 
 PASTA_APP = Path(__file__).resolve().parent.parent
 ARQUIVO_REGRAS = os.environ.get('FATURA_REGRAS', str(PASTA_APP / 'regras_usuario.json'))
+# Histórico e metas ficam numa pasta local que não sincroniza com a nuvem: a pasta do app está no OneDrive.
+# (%LOCALAPPDATA% no Windows; fora dele, ~/.fatura_cartao.)
+PASTA_DADOS = Path(os.environ['LOCALAPPDATA']) / 'fatura_cartao' if os.environ.get('LOCALAPPDATA') else Path.home() / '.fatura_cartao'
+ARQUIVO_METAS = os.environ.get('FATURA_METAS', str(PASTA_DADOS / 'metas_usuario.json'))
+PASTA_HISTORICO = os.environ.get('FATURA_HISTORICO', str(PASTA_DADOS / 'historico'))
 COR_BARRA = '#2a78d6'
 VOLTAR_AUTOMATICA = 'Voltar para a categoria automática'
+COMIDA_E_TRANSPORTE = [ft.COMIDA, ft.TRANSPORTE]
 
 
 def tabela_resumo(resumo, coluna, titulo):
@@ -61,6 +72,44 @@ def grafico_barras(resumo, coluna):
         , bargap=0.35
     )
     return figura
+
+
+def grafico_colunas(rotulos, centavos, apagadas=None):
+    # Uma série no tempo (faturas): colunas na cor única; "apagadas" (faturas parciais) ficam claras
+    # e o rótulo do eixo já diz "(parcial)", então a diferença não depende só da cor.
+    if apagadas is None:
+        apagadas = [False] * len(rotulos)
+    textos = [ft.reais(valor) for valor in centavos]
+    figura = go.Figure(go.Bar(
+          x=list(rotulos)
+        , y=[valor / 100 for valor in centavos]
+        , text=textos
+        , customdata=textos
+        , textposition='outside'
+        , cliponaxis=False
+        , marker_color=COR_BARRA
+        , marker_opacity=[0.4 if apagada else 1.0 for apagada in apagadas]
+        , hovertemplate='%{x}: %{customdata}<extra></extra>'
+    ))
+    figura.update_layout(
+          xaxis_title=None
+        , yaxis_title=None
+        , yaxis_showticklabels=False
+        , yaxis_showgrid=False
+        , xaxis_type='category'
+        , height=300
+        , margin={'l': 10, 'r': 10, 't': 30, 'b': 10}
+        , bargap=0.45
+    )
+    return figura
+
+
+def centavos_do_campo(valor):
+    return int((Decimal(str(valor)) * 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+
+
+def soma_categorias(valores, categorias):
+    return sum(int(valores.get(categoria, 0)) for categoria in categorias)
 
 
 st.set_page_config(page_title='Raio-X da fatura', page_icon='💳', layout='wide')
@@ -133,6 +182,55 @@ with st.sidebar:
         )
     hoje = st.date_input('Considerar compras até', value=date.today(), format='DD/MM/YYYY', key='hoje')
 
+datas_validas = vencimento is not None and fechamento is not None and fechamento < vencimento
+datas = None
+resultado = None
+if datas_validas:
+    datas = ft.ciclo(vencimento, fechamento)
+    resultado = ft.projecao(fatura, datas['inicio'], datas['ultimo_dia'], hoje)
+
+
+# ---------------------------------------------------------------- histórico: guardar esta fatura
+
+# Guarda uma vez por arquivo/vencimento/fechamento nesta sessão. Assim uma fatura removida do histórico
+# não volta sozinha no próximo clique, e corrigir o fechamento na barra lateral atualiza a guardada.
+situacao_historico = None
+if vencimento is None:
+    mensagem_historico = 'Sem a data de vencimento a fatura não é guardada no histórico.'
+else:
+    mensagem_historico = 'Com o fechamento igual ou depois do vencimento a fatura não é guardada no histórico.'
+if datas_validas:
+    marca = (hashlib.sha256(arquivo.getvalue()).hexdigest(), vencimento.isoformat(), fechamento.isoformat())
+    processadas = st.session_state.setdefault('historico_processado', {})
+    if marca not in processadas:
+        try:
+            processadas[marca] = hist.guardar(PASTA_HISTORICO, arquivo.getvalue(), arquivo.name, vencimento, fechamento, hist.data_de_hoje())
+        except (OSError, ValueError) as erro:
+            processadas[marca] = (hist.ERRO, f'Não consegui guardar a fatura no histórico: {erro}')
+    situacao_historico, mensagem_historico = processadas[marca]
+
+entradas, erros_historico = hist.carregar_historico(PASTA_HISTORICO)
+montadas = hist.montar(entradas, regras_usuario)
+medias, anteriores = hist.media_anterior(montadas, vencimento if vencimento is not None else date.max)
+
+
+# ---------------------------------------------------------------- metas
+
+gasto_atual = {}
+for linha in resumo.itertuples(index=False):
+    gasto_atual[linha.categoria] = int(linha.centavos)
+metas_usuario, erro_metas = mt.carregar_metas(ARQUIVO_METAS)
+if resultado is not None:
+    tabela_projecao = resultado['por_categoria']
+    situacao_metas = mt.situacao(
+          metas_usuario
+        , dict(zip(tabela_projecao['categoria'], tabela_projecao['centavos_atual']))
+        , dict(zip(tabela_projecao['categoria'], tabela_projecao['centavos_projetado']))
+        , resultado['dias_restantes']
+    )
+else:
+    situacao_metas = mt.situacao(metas_usuario, gasto_atual)
+
 
 # ---------------------------------------------------------------- números principais
 
@@ -155,8 +253,17 @@ if len(pendentes) > 0:
         + 'Os totais por categoria podem mudar quando você classificá-los na aba **Classificar**.'
     )
 
-aba_resumo, aba_ciclo, aba_classificar, aba_lancamentos = st.tabs(
-    ['Onde foi o dinheiro', 'Até o fechamento', 'Classificar', 'Lançamentos']
+for linha in situacao_metas:
+    if linha['estado'] != 'dentro':
+        st.warning('Meta: ' + mt.frase_situacao(linha))
+
+if situacao_historico in [hist.ERRO, hist.DUPLICADA, hist.CONFLITO]:
+    st.warning('Histórico: ' + ft.escapar_markdown(mensagem_historico))
+else:
+    st.caption('Histórico: ' + ft.escapar_markdown(mensagem_historico))
+
+aba_resumo, aba_ciclo, aba_meses, aba_classificar, aba_lancamentos = st.tabs(
+    ['Onde foi o dinheiro', 'Até o fechamento', 'Mês a mês', 'Classificar', 'Lançamentos']
 )
 
 
@@ -202,17 +309,107 @@ with aba_resumo:
         , width='stretch'
     )
 
+    st.subheader('Gastinhos que somam')
+    pequenos = ft.gastinhos(fatura)
+    if pequenos is None:
+        st.write('Poucas compras do dia a dia nesta fatura para separar as pequenas.')
+    else:
+        percentual = ''
+        if pequenos['percentual_do_gasto'] is not None:
+            percentual = f', {pequenos["percentual_do_gasto"]:.0f}% do gasto do período'.replace('.', ',')
+        st.markdown(
+            f'**{pequenos["quantidade"]} de {pequenos["total_compras"]} compras do dia a dia** foram de até '
+            + f'{ft.reais_md(pequenos["corte"])}. Juntas, somam **{ft.reais_md(pequenos["centavos"])}**{percentual}.'
+        )
+        st.caption(
+            'O corte de "pequena" é a mediana das suas próprias compras do dia a dia nesta fatura: metade delas custou até esse valor. '
+            + 'Parcelas, assinaturas, juros/multas/IOF e estornos não entram.'
+        )
+        lugares = pequenos['lugares'].head(10)
+        st.dataframe(
+              pd.DataFrame({
+                  'Estabelecimento': lugares['estabelecimento']
+                , 'Categoria': lugares['categoria']
+                , 'Compras pequenas': lugares['compras']
+                , 'Total': [ft.reais(valor) for valor in lugares['centavos']]
+              })
+            , hide_index=True
+            , width='stretch'
+        )
+
 
 # ---------------------------------------------------------------- aba: até o fechamento
 
 with aba_ciclo:
+    st.subheader('Metas desta fatura')
+    if erro_metas:
+        st.error(
+            ft.escapar_markdown(erro_metas)
+            + ' As metas não estão sendo usadas, e o app não grava nada por cima desse arquivo até ele ser corrigido.'
+        )
+    elif len(situacao_metas) == 0:
+        st.write('Nenhuma meta ainda. Crie uma abaixo, por exemplo comida + transporte juntos.')
+    for linha in situacao_metas:
+        st.markdown(mt.frase_situacao(linha))
+        # Estornos maiores que as compras deixam o atual negativo: a barra fica vazia.
+        st.progress(max(0.0, min(linha['percentual'], 100.0)) / 100)
+        detalhes = []
+        if linha['por_dia'] is not None:
+            detalhes.append(
+                f'Para caber na meta: até {ft.reais_md(linha["por_dia"])} por dia nos {linha["dias_restantes"]} dia(s) de compra '
+                + f'que faltam depois de {hoje:%d/%m/%Y} ({ft.reais_md(linha["restante"])} no total).'
+            )
+        elif linha['restante'] > 0 and linha['dias_restantes'] == 0:
+            detalhes.append(f'Os dias de compra desta fatura acabaram; sobraram {ft.reais_md(linha["restante"])} da meta.')
+        elif linha['restante'] > 0 and datas_validas:
+            # Vencimento certo, mas "Considerar compras até" é anterior ao início do ciclo: não há projeção.
+            detalhes.append(
+                f'Faltam {ft.reais_md(linha["restante"])} para a meta. A data em "Considerar compras até" é anterior '
+                + 'ao início do ciclo, então não dá para calcular quanto dá por dia.'
+            )
+        elif linha['restante'] > 0:
+            detalhes.append(f'Faltam {ft.reais_md(linha["restante"])} para a meta. Informe o vencimento para ver quanto dá por dia.')
+        if linha['projetado'] is not None and linha['estado'] == 'dentro':
+            detalhes.append(f'No ritmo atual fecha em {ft.reais_md(linha["projetado"])}.')
+        if anteriores:
+            detalhes.append(
+                f'Sua média nessas categorias: {ft.reais_md(soma_categorias(medias, linha["categorias"]))} '
+                + f'({len(anteriores)} fatura(s) completa(s) do histórico).'
+            )
+        if detalhes:
+            st.caption(' '.join(detalhes))
+
+    if not erro_metas:
+        with st.expander('Criar, mudar ou remover metas', expanded=len(metas_usuario) == 0):
+            with st.form('form_meta'):
+                categorias_meta = st.multiselect('Categorias (uma ou mais, somadas)', options=mt.CATEGORIAS_META, key='meta_categorias')
+                valor_meta = st.number_input('Valor máximo na fatura (R$)', min_value=0.0, step=50.0, format='%.2f', key='meta_valor')
+                salvar_meta = st.form_submit_button('Salvar meta')
+            st.caption('Se já existe meta com exatamente as mesmas categorias, o valor dela é trocado.')
+            if salvar_meta:
+                try:
+                    novas_metas = mt.definir_meta(metas_usuario, categorias_meta, centavos_do_campo(valor_meta))
+                except ValueError as erro:
+                    st.error(ft.escapar_markdown(str(erro)))
+                else:
+                    mt.salvar_metas(ARQUIVO_METAS, novas_metas)
+                    st.session_state['mensagem'] = f'Meta {ft.escapar_markdown(mt.nome_meta(mt.ordenar_categorias(categorias_meta)))} salva.'
+                    st.rerun()
+            if metas_usuario:
+                nomes_metas = [mt.nome_meta(meta['categorias']) for meta in metas_usuario]
+                meta_removida = st.selectbox('Meta para remover', options=nomes_metas, key='meta_remover')
+                if st.button('Remover meta'):
+                    escolhida = metas_usuario[nomes_metas.index(meta_removida)]
+                    mt.salvar_metas(ARQUIVO_METAS, mt.remover_meta(metas_usuario, escolhida['categorias']))
+                    st.session_state['mensagem'] = f'Meta {ft.escapar_markdown(meta_removida)} removida.'
+                    st.rerun()
+
+    st.subheader('Ciclo e estimativa')
     if vencimento is None or fechamento is None:
         st.info('O nome do arquivo não traz a data de vencimento. Informe o vencimento na barra lateral para ver o ciclo.')
     elif fechamento >= vencimento:
         st.error('O fechamento precisa ser antes do vencimento. Corrija as datas na barra lateral.')
     else:
-        datas = ft.ciclo(vencimento, fechamento)
-        resultado = ft.projecao(fatura, datas['inicio'], datas['ultimo_dia'], hoje)
         st.markdown(
             f'Compras desta fatura: de **{datas["inicio"]:%d/%m/%Y}** a **{datas["ultimo_dia"]:%d/%m/%Y}** '
             + f'(fecha em {datas["fechamento"]:%d/%m/%Y}, vence em {datas["vencimento"]:%d/%m/%Y}).'
@@ -256,6 +453,19 @@ with aba_ciclo:
                 + 'e entram nos totais, mas não no ritmo.'
             )
 
+        st.subheader('Melhor dia de compra')
+        melhor = ft.melhor_dia_de_compra(vencimento, fechamento, hoje)
+        st.markdown(
+            f'**Dia {melhor["dia"].day}, o dia do fechamento.** Uma compra em **{melhor["dia"]:%d/%m/%Y}** já vai para a fatura '
+            + f'que vence em {melhor["vencimento"]:%d/%m/%Y}: **{melhor["prazo_dias"]} dias** até pagar. '
+            + f'Na véspera ({melhor["vespera"]:%d/%m/%Y}) ela entraria na fatura que vence em '
+            + f'{melhor["vencimento_vespera"]:%d/%m/%Y}, com {melhor["prazo_vespera_dias"]} dias.'
+        )
+        st.caption(
+            'Regra do Nubank: a fatura fecha 7 dias antes do vencimento e a compra do dia do fechamento já fica para a fatura seguinte. '
+            + 'Nos meses seguintes, o fechamento fica à mesma distância do vencimento de cada mês; confira o "melhor dia de compra" no app do Nubank.'
+        )
+
     st.subheader('Parcelas que ainda vão cair')
     futuras = ft.parcelas_futuras(fatura)
     if len(futuras) == 0:
@@ -274,6 +484,224 @@ with aba_ciclo:
             , width='stretch'
         )
         st.caption(f'Total nas próximas faturas: {ft.reais_md(int(futuras["centavos_futuros"].sum()))} (supondo parcelas de mesmo valor).')
+
+        st.subheader('Já comprometido nas próximas faturas')
+        por_mes = ft.parcelas_por_mes(fatura, vencimento if datas_validas else None)
+        st.plotly_chart(grafico_colunas(por_mes['fatura'], por_mes['centavos']), width='stretch', config={'displayModeBar': False}, key='grafico_parcelas')
+        st.dataframe(
+              pd.DataFrame({
+                  'Fatura': por_mes['fatura']
+                , 'Parcelas': por_mes['compras']
+                , 'Já comprometido': [ft.reais(valor) for valor in por_mes['centavos']]
+              })
+            , hide_index=True
+            , width='stretch'
+        )
+        st.caption(
+            'Só as parcelas desta fatura: compras novas e assinaturas vêm por cima. '
+            + 'O mês é o do vencimento de cada fatura.'
+        )
+
+
+# ---------------------------------------------------------------- aba: mês a mês
+
+with aba_meses:
+    st.caption('Histórico: ' + ft.escapar_markdown(mensagem_historico))
+    for erro in erros_historico:
+        st.error(f'Fatura guardada {ft.escapar_markdown(erro["vencimento"])} com problema e ignorada: {ft.escapar_markdown(erro["erro"])}')
+
+    st.subheader('Esta fatura e a sua média')
+    if resultado is not None:
+        tabela_projecao = resultado['por_categoria']
+        valores_desta = dict(zip(tabela_projecao['categoria'], tabela_projecao['centavos_projetado']))
+        valores_desta['Total'] = resultado['projetado']
+        explicacao_desta = 'estimada no fechamento, no ritmo atual'
+    else:
+        valores_desta = dict(gasto_atual)
+        valores_desta['Total'] = valores['gasto']
+        explicacao_desta = 'o que já está nela'
+    if not anteriores:
+        st.info(
+            'Ainda não há no histórico uma fatura completa anterior a esta para comparar. '
+            + 'Cada fatura que você abrir fica guardada; a comparação aparece a partir da próxima.'
+        )
+    else:
+        comparacao = hist.comparar_com_media(valores_desta, medias)
+        atual_ct = soma_categorias(valores_desta, COMIDA_E_TRANSPORTE)
+        media_ct = soma_categorias(medias, COMIDA_E_TRANSPORTE)
+        coluna1, coluna2 = st.columns(2)
+        coluna1.metric(
+              'Comida + transporte nesta fatura'
+            , ft.reais(atual_ct)
+            # O delta passa por markdown: dois "R$" viram fórmula sem o escape.
+            , delta=f'{ft.reais_md(atual_ct - media_ct)} vs. média de {ft.reais_md(media_ct)}'
+            , delta_color='inverse'
+        )
+        coluna2.metric(
+              'Gasto do período nesta fatura'
+            , ft.reais(valores_desta['Total'])
+            , delta=f'{ft.reais_md(valores_desta["Total"] - medias.get("Total", 0))} vs. média de {ft.reais_md(medias.get("Total", 0))}'
+            , delta_color='inverse'
+        )
+        variacoes = []
+        for valor in comparacao['percentual']:
+            if valor is None or pd.isna(valor):
+                variacoes.append('-')
+            else:
+                variacoes.append(f'{valor:+.0f}%')
+        st.dataframe(
+              pd.DataFrame({
+                  'Categoria': comparacao['categoria']
+                , 'Esta fatura': [ft.reais(valor) for valor in comparacao['atual']]
+                , 'Média': [ft.reais(valor) for valor in comparacao['media']]
+                , 'Diferença': [ft.reais(valor) for valor in comparacao['diferenca']]
+                , 'Variação': variacoes
+              })
+            , hide_index=True
+            , width='stretch'
+        )
+        st.caption(
+            f'Esta fatura: {explicacao_desta}. '
+            + f'Média de {len(anteriores)} fatura(s) completa(s) anterior(es): '
+            + ', '.join(item['rotulo'] for item in anteriores)
+            + '. Faturas guardadas antes de fechar (parciais) não entram na média. '
+            + 'As faturas do histórico são reclassificadas com as suas categorias atuais.'
+        )
+
+    st.subheader('Gasto por fatura')
+    if len(montadas) == 0:
+        st.write('Nenhuma fatura guardada ainda.')
+    else:
+        mensal = hist.tabela_mensal(montadas)
+        totais_mensais = mensal[mensal['categoria'] == 'Total']
+        rotulos = [rotulo if completa else rotulo + ' (parcial)' for rotulo, completa in zip(totais_mensais['fatura'], totais_mensais['completa'])]
+        st.plotly_chart(
+              grafico_colunas(rotulos, list(totais_mensais['centavos']), [not completa for completa in totais_mensais['completa']])
+            , width='stretch'
+            , config={'displayModeBar': False}
+            , key='grafico_meses'
+        )
+        colunas = {}
+        for item, rotulo in zip(montadas, rotulos):
+            colunas[rotulo] = item['vencimento']
+        linhas_tabela = []
+        for categoria in ft.CATEGORIAS + ['Total']:
+            da_categoria = mensal[mensal['categoria'] == categoria]
+            if len(da_categoria) == 0:
+                continue
+            linha_tabela = {'Categoria': categoria}
+            for rotulo, vence in colunas.items():
+                valor = da_categoria.loc[da_categoria['vencimento'] == vence, 'centavos']
+                linha_tabela[rotulo] = ft.reais(int(valor.iloc[0])) if len(valor) > 0 else '-'
+            linhas_tabela.append(linha_tabela)
+        st.dataframe(pd.DataFrame(linhas_tabela), hide_index=True, width='stretch')
+        st.caption('Gasto do período de cada fatura (sem pagamento e saldo anterior). "Parcial": guardada antes do fechamento.')
+
+    st.subheader('Assinaturas e gastos fixos')
+    bases = montadas
+    if len(bases) == 0:
+        bases = [{'vencimento': None, 'rotulo': '', 'completa': False, 'fatura': fatura}]
+    fixos = hist.recorrentes(bases)
+    if len(fixos) == 0:
+        st.write('Nenhuma cobrança fixa encontrada.')
+    else:
+        ativos = fixos[fixos['ativa']]
+        st.markdown(
+            f'**{ft.reais_md(int(ativos["centavos"].sum()))} por mês** em cobranças fixas, '
+            + f'**{ft.reais_md(int(ativos["por_ano"].sum()))} por ano**.'
+        )
+        st.dataframe(
+              pd.DataFrame({
+                  'Cobrança': fixos['estabelecimento']
+                , 'Categoria': fixos['categoria']
+                , 'Por mês': [ft.reais(valor) for valor in fixos['centavos']]
+                , 'Por ano': [ft.reais(valor) for valor in fixos['por_ano']]
+                , 'Faturas': fixos['faturas']
+                , 'Ainda cobrada': ['sim' if valor else 'não' for valor in fixos['ativa']]
+                , 'Como foi achada': fixos['como']
+              })
+            , hide_index=True
+            , width='stretch'
+        )
+    st.caption(
+        '"Repete todo mês": mesmo estabelecimento e mesmo valor, uma vez por fatura, em 2 ou mais faturas seguidas do histórico. '
+        + '"Assinatura conhecida": categoria Assinaturas. '
+        + '"Ainda cobrada": apareceu na última fatura completa ou depois dela (uma fatura ainda aberta não tira nada do total). '
+        + 'Parcelas, juros e estornos não entram. O total soma só o que ainda é cobrado.'
+    )
+    if len(montadas) < 2:
+        st.caption('Com menos de 2 faturas guardadas, só aparecem as assinaturas conhecidas pelo nome.')
+
+    st.subheader('Faturas guardadas')
+    st.caption(
+        f'Ficam em {ft.escapar_markdown(PASTA_HISTORICO)}, no seu computador. '
+        + '"Parcial": guardada antes do fechamento, fica fora das médias. Para completar, abra aqui a exportação '
+        + 'feita depois do fechamento (ou o mesmo arquivo, se nada mudou).'
+    )
+    if entradas:
+        st.dataframe(
+              pd.DataFrame({
+                  'Vencimento': [entrada['vencimento'].strftime('%d/%m/%Y') for entrada in entradas]
+                , 'Fechamento': [entrada['fechamento'].strftime('%d/%m/%Y') for entrada in entradas]
+                , 'Guardada em': [entrada['salvo_em'].strftime('%d/%m/%Y') for entrada in entradas]
+                , 'Lançamentos': [len(entrada['df']) for entrada in entradas]
+                , 'Situação': ['completa' if entrada['completa'] else 'parcial' for entrada in entradas]
+                , 'Arquivo': [entrada['arquivo'] for entrada in entradas]
+              })
+            , hide_index=True
+            , width='stretch'
+        )
+    opcoes_remover = [entrada['vencimento'].isoformat() for entrada in entradas] + [erro['vencimento'] for erro in erros_historico]
+    if opcoes_remover:
+        remover_vencimento = st.selectbox(
+              'Fatura para remover do histórico'
+            , options=sorted(opcoes_remover)
+            , format_func=lambda texto: date.fromisoformat(texto).strftime('%d/%m/%Y')
+            , key='historico_remover'
+        )
+        if st.button('Remover do histórico'):
+            hist.remover(PASTA_HISTORICO, date.fromisoformat(remover_vencimento))
+            # Com o mesmo vencimento: se a fatura aberta não foi guardada porque a guardada estava com problema
+            # ou em conflito (as mensagens mandam remover a guardada), ela é guardada agora. Nos outros casos
+            # (inclusive "mantive a guardada", versão mais velha aberta) a removida não volta nesta sessão.
+            # Com outro vencimento: uma "duplicada" pode ter sido desta que saiu, então tenta de novo.
+            processado = st.session_state.get('historico_processado', {})
+            for marca_processada, (situacao, texto) in list(processado.items()):
+                if marca_processada[1] == remover_vencimento and situacao in [hist.ERRO, hist.CONFLITO]:
+                    del processado[marca_processada]
+                elif marca_processada[1] != remover_vencimento and situacao == hist.DUPLICADA:
+                    del processado[marca_processada]
+                elif marca_processada[1] == remover_vencimento:
+                    processado[marca_processada] = (
+                          hist.REMOVIDA
+                        , f'Fatura {date.fromisoformat(remover_vencimento):%d/%m/%Y} removida do histórico. '
+                        + 'Ela só volta se você abrir este arquivo de novo numa nova sessão (recarregando a página).'
+                    )
+            st.session_state['mensagem'] = f'Fatura {date.fromisoformat(remover_vencimento):%d/%m/%Y} removida do histórico.'
+            st.rerun()
+
+    with st.expander('Adicionar faturas antigas'):
+        antigas = st.file_uploader(
+              'CSVs de faturas anteriores do Nubank (o vencimento vem do nome, Nubank_AAAA-MM-DD.csv)'
+            , type=['csv']
+            , accept_multiple_files=True
+            , key='importar_antigas'
+        )
+        if st.button('Guardar no histórico', disabled=not antigas):
+            resultados = []
+            for antiga in antigas:
+                vence = ft.vencimento_do_nome(antiga.name)
+                if vence is None:
+                    resultados.append(f'{antiga.name}: sem a data de vencimento no nome, não guardei.')
+                    continue
+                try:
+                    situacao, texto = hist.guardar(PASTA_HISTORICO, antiga.getvalue(), antiga.name, vence, vence - timedelta(days=7), hist.data_de_hoje())
+                except (OSError, ValueError) as erro:
+                    texto = f'não consegui ler ({erro})'
+                resultados.append(f'{antiga.name}: {texto}')
+            st.session_state['mensagem'] = ft.escapar_markdown(' | '.join(resultados))
+            st.rerun()
+        st.caption('O fechamento dessas faturas é considerado 7 dias antes do vencimento.')
 
 
 # ---------------------------------------------------------------- aba: classificar

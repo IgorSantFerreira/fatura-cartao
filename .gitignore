@@ -6,5 +6,9 @@ regras_usuario.json
 regras_usuario.json.tmp
 # Fatura real usada nos testes: dado pessoal, não publicar.
 tests/dados/
+# Histórico de faturas e metas: pessoais.
+historico/
+metas_usuario.json
+metas_usuario.json.tmp
 entrega_gs/
 assets/
