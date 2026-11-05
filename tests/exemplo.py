@@ -1,0 +1,65 @@
+# Fatura de exemplo dos testes: 100% fictícia (nomes e valores inventados), com a mesma estrutura de uma
+# fatura real do Nubank: pagamento e saldo da fatura anterior, multa/juros/IOF por atraso, IOF de compra
+# internacional, estorno de delivery, compras parceladas, assinaturas, o mesmo lugar várias vezes e
+# estabelecimentos que as regras do app não reconhecem. Fica em código (não em CSV) para os testes rodarem
+# num clone do repositório sem nenhum dado pessoal.
+
+NOME_EXEMPLO = 'Nubank_2026-11-25.csv'
+
+CSV_EXEMPLO = '''date,title,amount
+2026-11-03,IOF de compra internacional,"3,12"
+2026-11-03,IOF de compra internacional,"3,85"
+2026-11-03,Pag*Nuuvem,"71,40"
+2026-11-03,Dl*Deezer Premium,"22,90"
+2026-11-03,Openai *Chatgpt Subscr,"108,30"
+2026-11-01,Lucasferreiramota,"61,20"
+2026-11-01,Bom Prato,"39,90"
+2026-11-01,Recanto Verde Parque,"12,00"
+2026-10-31,Auto Posto Primavera,"187,60"
+2026-10-31,Vip Estacionamentos L,"18,50"
+2026-10-31,Centralparkingestac,"45,00"
+2026-10-31,Bandeirante,"36,00"
+2026-10-31,Ifd*J. R. Lima Pizza,"52,90"
+2026-10-31,Auto Posto Girassol,"215,80"
+2026-10-30,Restaurante Bom Prato,"27,00"
+2026-10-29,Restaurante Bom Prato,"38,00"
+2026-10-29,Uber Uber *Trip Help.U,"7,45"
+2026-10-29,Ifd*M. Antunes,"31,40"
+2026-10-29,Ifood Club Assinatura,"12,90"
+2026-10-28,Pagamento recebido,"- 1.412,70"
+2026-10-28,Multa por fatura atrasada,"28,25"
+2026-10-28,IOF por fatura atrasada,"5,62"
+2026-10-28,Juros por fatura atrasada,"14,80"
+2026-10-28,Emv Metrô*162238417,"5,40"
+2026-10-28,Ifd*31.554.208 Ana Lu,"58,30"
+2026-10-28,Icloud *Storage,"4,90"
+2026-10-28,Centralparkingestac,"45,00"
+2026-10-28,Emv Metrô*162290033,"5,40"
+2026-10-27,Topazio Park Estacion,"32,00"
+2026-10-27,Posto Jacaranda,"141,30"
+2026-10-27,Conectanet,"39,90"
+2026-10-27,Burger do Bairro,"14,50"
+2026-10-27,Airbnb * Hmzk31qa77 - Parcela 1/2,"84,00"
+2026-10-27,Arena Esportes Empreen,"15,00"
+2026-10-26,Valor pendente do mês anterior,"1.412,70"
+2026-10-26,Ifd*Carla Mendes de S,"89,90"
+2026-10-25,Mp *Anapaulasilv,"25,00"
+2026-10-25,Icloud *Storage,"16,90"
+2026-10-25,Tavola Rest,"26,00"
+2026-10-24,Ifd*J. R. Lima Pizza,"52,90"
+2026-10-22,Zarpa - Parcela 1/2,"149,90"
+2026-10-22,Uber Uber *Trip Help.U,"18,70"
+2026-10-21,Hortifruti Sol,"13,20"
+2026-10-21,Uber Uber *Trip Help.U,"21,35"
+2026-10-20,Vidafarma,"29,40"
+2026-10-20,Cerealista do Bairro,"22,80"
+2026-10-20,Ifd*Carla Mendes de S,"76,40"
+2026-10-18,Academia Corpo Livre,"109,90"
+2026-10-18,Amazon - Parcela 8/10,"88,20"
+2026-10-18,Playstation Store - Parcela 3/3,"199,80"
+2026-10-18,Decathlon - Parcela 5/6,"69,90"
+2026-10-18,Ifd*J. R. Lima Pizza,"52,90"
+2026-10-17,Estorno de compra (iFood),"- 44,60"
+'''
+
+CONTEUDO_EXEMPLO = CSV_EXEMPLO.encode('utf-8')

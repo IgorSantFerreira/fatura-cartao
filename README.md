@@ -92,6 +92,40 @@ O botão **Baixar lançamentos rotulados** gera o CSV usado no notebook. Além d
 
 A origem permite medir quantos rótulos só confirmaram a sugestão do app. A lista de conferência já vem com a categoria das regras escolhida, e isso puxa os rótulos para o lado das regras.
 
+## Sugestões do modelo (aba Classificar)
+
+Quando a base tem estabelecimentos conferidos em pelo menos 2 categorias, um modelo de **Regressão Logística** aprende com eles e sugere uma categoria para cada estabelecimento "A classificar" da fatura aberta. Cada sugestão vem com:
+
+- a **confiança** do modelo;
+- uma pista: os estabelecimentos que você já conferiu com nome mais parecido. Não é o motivo da sugestão; o modelo também usa o valor e quantas vezes o estabelecimento aparece.
+
+Para cada sugestão há quatro opções:
+
+- **Aceitar**: a categoria passa a valer e vira rótulo, com origem "aceitou sugestão do modelo".
+- **Corrigir**: você escolhe a categoria certa.
+- **Rejeitar**: o lançamento continua "A classificar" e essa sugestão não aparece mais para aquele estabelecimento.
+- **Decidir depois**.
+
+Nada muda de categoria sem você aceitar.
+
+O modelo usa o nome do estabelecimento (pedaços de 2 a 4 letras), o valor, em quantas faturas o estabelecimento aparece, se o valor se repete e se é parcela. O CSV do Nubank não tem horário. O dia da semana e a posição no ciclo foram testados no notebook e não ajudaram de forma consistente, mesmo com um padrão de dia da semana colocado de propósito nas faturas sintéticas; o app usa o modelo sem eles.
+
+A confiança mostrada **não é calibrada** e tende a ser otimista. O app cita os números medidos no notebook (guardados em `src/modelo.py`, `CALIBRACAO_SUGESTOES`): nos 31 estabelecimentos que as regras não reconheciam, o modelo dizia em média 56% e acertou 45%. As calibrações testadas (sigmoide e temperatura) ou baixaram o acerto ou pioraram a calibração, então nenhuma foi para o app.
+
+## Experimento de ML (notebook)
+
+`notebooks/classificacao_despesas.ipynb` desenvolve e avalia a classificação com as faturas sintéticas. Se elas faltarem, o notebook as recria com o gerador. Os detalhes:
+
+- **Validação cruzada:** agrupada por estabelecimento. Nenhum estabelecimento aparece no treino e no teste ao mesmo tempo.
+- **Bases de comparação:** a classe mais comum e as regras do app.
+- **Modelos:** Regressão Logística e Random Forest, com e sem contexto temporal. Os hiperparâmetros são escolhidos por busca com validação aninhada.
+- **Escolha do modelo do app:** totalmente aninhada (a escolha entre modelos também é feita dentro de cada dobra), para que a nota não seja otimista. O notebook tem travas que falham se a configuração ou os números de confiança em `src/modelo.py` ficarem diferentes do que ele calcula.
+- **Métricas:** F1-macro, precisão, recall, matriz de confusão e calibração (curva de confiabilidade, ECE e Brier).
+- **Conclusão:** a resposta a cada hipótese, com critério definido antes, e as limitações. Resumo da execução atual: os modelos ficam bem acima do chute ingênuo; regras + modelo ganham das regras em média (F1-macro 0,748 contra 0,726), mas não em todas as dobras; o contexto temporal não ajudou de forma consistente; a confiança não ficou calibrada.
+- **Dados:** as faturas sintéticas têm um padrão de dia da semana colocado pelo gerador (delivery e lazer mais no fim de semana, estacionamento e transporte em dia útil). Ele serve para testar se o método consegue usar contexto temporal; não diz nada sobre pessoas reais.
+
+Para rodar de novo: abra o notebook na pasta `notebooks/` e execute tudo. Ele usa só dados fictícios.
+
 ## Privacidade
 
 O app só atende este computador (`localhost`) e a coleta de estatísticas do Streamlit está desligada. O app não envia o CSV para lugar nenhum.
@@ -99,7 +133,7 @@ O app só atende este computador (`localhost`) e a coleta de estatísticas do St
 As faturas guardadas e as metas ficam em `%LOCALAPPDATA%\fatura_cartao\`, uma pasta local que o OneDrive não sincroniza. Na pasta do app, que pode estar no OneDrive, ficam dois arquivos pessoais fora do git, que não devem ser publicados:
 
 - `regras_usuario.json`: as suas escolhas de categoria;
-- `tests/dados/`: a fatura real usada nos testes.
+- `tests/dados/`: uma fatura real, opcional. Os testes usam uma fatura fictícia (`tests/exemplo.py`); a real só serve para o teste de privacidade conferir que nenhum estabelecimento dela aparece em arquivos do repositório (sem ela, esse teste é pulado).
 
 Os rótulos de "Minhas faturas" ficam em `%LOCALAPPDATA%\fatura_cartao\rotulos.json`.
 

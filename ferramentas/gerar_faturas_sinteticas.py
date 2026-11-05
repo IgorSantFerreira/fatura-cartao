@@ -177,6 +177,13 @@ IOF_INTERNACIONAL = 0.035
 # Conta de consumo: cobrança mensal com valor variável.
 ENERGIA = ('Enel Sp Energia', CASA, 9000, 16000, 26)
 
+# Padrão de dia da semana (segunda a domingo), colocado de propósito pelo gerador para o experimento de contexto
+# temporal ter o que encontrar: delivery e lazer pesam mais no fim de semana, mercado no sábado, e estacionamento,
+# metrô, corridas e restaurante (almoço) nos dias úteis. Numa fatura real esse padrão pode não existir.
+PESOS_FIM_DE_SEMANA = [1, 1, 1, 1, 2, 4, 4]
+PESOS_SABADO = [1, 1, 1, 1, 1, 3, 2]
+PESOS_DIA_UTIL = [3, 3, 3, 3, 3, 1, 0.5]
+
 MESES_ATRASO = {4, 10}
 MESES_VIAGEM = {1, 5, 9}
 MESES_ESTORNO = {2, 6, 11}
@@ -203,8 +210,14 @@ class Gerador:
     def valor(self, minimo, maximo):
         return int(round(self.sorteio.uniform(minimo, maximo) * 100))
 
-    def dia_no_ciclo(self, inicio, fim):
-        return inicio + timedelta(days=self.sorteio.randint(0, (fim - inicio).days))
+    def dia_no_ciclo(self, inicio, fim, pesos=None):
+        # pesos: peso de cada dia da semana (segunda = 0). Sem pesos, qualquer dia do ciclo tem a mesma chance.
+        dias = []
+        for deslocamento in range((fim - inicio).days + 1):
+            dias.append(inicio + timedelta(days=deslocamento))
+        if pesos is None:
+            return self.sorteio.choice(dias)
+        return self.sorteio.choices(dias, weights=[pesos[dia.weekday()] for dia in dias])[0]
 
     def escolher(self, lista, quantidade):
         return [self.sorteio.choice(lista) for _ in range(quantidade)]
@@ -231,9 +244,9 @@ def gerar(meses, semente, primeiro_vencimento):
         def lancar(dia, titulo, centavos, categoria, comportamento):
             linhas.append([dia, titulo, int(centavos), categoria, comportamento])
 
-        def sortear(lista, categoria, quantidade):
+        def sortear(lista, categoria, quantidade, pesos=None):
             for nome, minimo, maximo in gerador.escolher(lista, quantidade):
-                lancar(gerador.dia_no_ciclo(inicio, fim), nome, gerador.valor(minimo, maximo), categoria, OCASIONAL)
+                lancar(gerador.dia_no_ciclo(inicio, fim, pesos), nome, gerador.valor(minimo, maximo), categoria, OCASIONAL)
 
         # Assinaturas e contas fixas.
         for nome, categoria, centavos, dia_do_mes, primeiro, ultimo in ASSINATURAS_FIXAS:
@@ -251,20 +264,20 @@ def gerar(meses, semente, primeiro_vencimento):
         # Comida e bebida: muito delivery, mercado, padaria e lanches.
         deliveries = []
         for nome, minimo, maximo in gerador.escolher(DELIVERY, gerador.sorteio.randint(4, 7)):
-            dia = gerador.dia_no_ciclo(inicio, fim)
+            dia = gerador.dia_no_ciclo(inicio, fim, PESOS_FIM_DE_SEMANA)
             centavos = gerador.valor(minimo, maximo)
             lancar(dia, nome, centavos, COMIDA, OCASIONAL)
             deliveries.append((dia, centavos))
-        sortear(MERCADO, COMIDA, gerador.sorteio.randint(2, 4))
-        sortear(RESTAURANTE, COMIDA, gerador.sorteio.randint(1, 3))
+        sortear(MERCADO, COMIDA, gerador.sorteio.randint(2, 4), PESOS_SABADO)
+        sortear(RESTAURANTE, COMIDA, gerador.sorteio.randint(1, 3), PESOS_DIA_UTIL)
 
         # Transporte: combustível (o maior peso), estacionamento, metrô, corridas e um ou outro gasto com o carro.
         sortear(POSTO, TRANSPORTE, gerador.sorteio.choice([2, 3, 3, 3, 4]))
-        sortear(ESTACIONAMENTO, TRANSPORTE, gerador.sorteio.randint(2, 4))
+        sortear(ESTACIONAMENTO, TRANSPORTE, gerador.sorteio.randint(2, 4), PESOS_DIA_UTIL)
         for _ in range(gerador.sorteio.randint(2, 6)):
             numero = gerador.sorteio.randint(100000000, 199999999)
-            lancar(gerador.dia_no_ciclo(inicio, fim), f'Emv Metrô*{numero}', 540, TRANSPORTE, OCASIONAL)
-        sortear(CORRIDA, TRANSPORTE, gerador.sorteio.randint(1, 4))
+            lancar(gerador.dia_no_ciclo(inicio, fim, PESOS_DIA_UTIL), f'Emv Metrô*{numero}', 540, TRANSPORTE, OCASIONAL)
+        sortear(CORRIDA, TRANSPORTE, gerador.sorteio.randint(1, 4), PESOS_DIA_UTIL)
         if gerador.sorteio.random() < 0.3:
             sortear(OUTRO_TRANSPORTE, TRANSPORTE, 1)
 
@@ -287,7 +300,7 @@ def gerar(meses, semente, primeiro_vencimento):
         sortear(FARMACIA, SAUDE, gerador.sorteio.randint(1, 2))
         if gerador.sorteio.random() < 0.3:
             sortear(SAUDE_LISTA, SAUDE, 1)
-        sortear(LAZER_LISTA, LAZER, gerador.sorteio.choice([0, 1, 1, 2]))
+        sortear(LAZER_LISTA, LAZER, gerador.sorteio.choice([0, 1, 1, 2]), PESOS_FIM_DE_SEMANA)
         sortear(CASA_EXTRA, CASA, gerador.sorteio.choice([0, 0, 1]))
 
         # Parcelas: a primeira no dia da compra, as seguintes no primeiro dia do ciclo (como no Nubank).
@@ -356,14 +369,17 @@ gabarito.csv
   pelo gerador. Serve para avaliar o modelo de classificação sem precisar rotular tudo à mão.
 
 Como foram feitas
-  - Perfil parecido com o de uma pessoa real (comida e transporte pesando ~R$ 1,0-1,6 mil por mês,
-    muito delivery, combustível, estacionamento e metrô), mas nenhum estabelecimento ou valor foi copiado.
+  - Perfil de quem gasta mais com comida e transporte (muito delivery, combustível, estacionamento e
+    metrô). Nenhum estabelecimento ou valor foi copiado de faturas reais.
     Só se repetem textos que o próprio Nubank gera para todo mundo ("Pagamento recebido", "IOF de compra
     internacional", "Multa por fatura atrasada"...) e o formato das cobranças do Uber e do metrô.
   - Assinaturas com valor fixo (uma com reajuste, algumas canceladas ou contratadas no período), uma
     assinatura em dólar com IOF, conta de energia variável, parcelas, três viagens, três estornos e dois
     meses com pagamento atrasado (multa, juros e IOF).
   - Cerca de um terço dos estabelecimentos tem nome que não entrega a categoria ("Mp *", "Pag*", "Ec *").
+  - Padrão de dia da semana COLOCADO PELO GERADOR (por construção): delivery e lazer mais no fim de semana,
+    mercado no sábado, estacionamento/metrô/corridas/restaurante nos dias úteis. Serve para testar se o método
+    consegue usar o contexto temporal quando ele existe; não é evidência de que pessoas reais tenham esse padrão.
 
 Limitações (para o trabalho)
   - É um único perfil inventado: o modelo pode aprender o jeito do gerador, não o de pessoas reais.

@@ -2,3 +2,9 @@ streamlit==1.66.1
 pandas==3.0.3
 plotly==7.1.0
 pytest==9.1.1
+# Modelo de classificação (app e notebook)
+scikit-learn==1.9.1
+scipy==1.18.1
+numpy==2.5.0
+# Só para o notebook do experimento
+matplotlib==3.11.1

@@ -19,6 +19,7 @@ faturas_sinteticas/
 # Rótulos e o CSV de lançamentos rotulados (baixado pelo app para o notebook): pessoais.
 rotulos.json
 rotulos_origem.json
+sugestoes_rejeitadas.json
 *.json.tmp
 rotulados_*.csv
 entrega_gs/

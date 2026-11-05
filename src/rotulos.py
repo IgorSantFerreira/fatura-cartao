@@ -28,7 +28,43 @@ ORIGEM_CONFIRMOU = 'conferência: confirmou a categoria do app'
 ORIGEM_TROCOU = 'conferência: trocou a categoria'
 ORIGEM_A_CLASSIFICAR = 'formulário A classificar'
 ORIGEM_CORRIGIR = 'corrigir'
+ORIGEM_ACEITOU_MODELO = 'aceitou sugestão do modelo'
+ORIGEM_CORRIGIU_MODELO = 'corrigiu sugestão do modelo'
 ORIGEM_DESCONHECIDA = 'desconhecida'
+
+
+# Sugestões do modelo que o usuário rejeitou: {chave do estabelecimento: [categorias rejeitadas]}.
+# Uma sugestão rejeitada não volta para aquele estabelecimento (outra categoria sugerida depois aparece).
+
+def carregar_rejeitadas(caminho):
+    if not os.path.exists(caminho):
+        return {}, None
+    try:
+        with open(caminho, encoding='utf-8') as arquivo:
+            conteudo = json.load(arquivo)
+    except (OSError, ValueError) as erro:
+        return {}, f'Não consegui ler {caminho}: {erro}'
+    if not isinstance(conteudo, dict) or not all(isinstance(valor, list) for valor in conteudo.values()):
+        return {}, f'{caminho} deveria conter {{"estabelecimento": ["categoria", ...]}}.'
+    return conteudo, None
+
+
+def salvar_rejeitadas(caminho, rejeitadas):
+    pasta = os.path.dirname(os.path.abspath(caminho))
+    os.makedirs(pasta, exist_ok=True)
+    temporario = caminho + '.tmp'
+    with open(temporario, 'w', encoding='utf-8') as arquivo:
+        json.dump(dict(sorted(rejeitadas.items())), arquivo, ensure_ascii=False, indent=2)
+    os.replace(temporario, caminho)
+
+
+def rejeitar(rejeitadas, chave, categoria):
+    novas = {}
+    for chave_existente, lista in rejeitadas.items():
+        novas[chave_existente] = list(lista)
+    if categoria not in novas.get(chave, []):
+        novas[chave] = novas.get(chave, []) + [categoria]
+    return novas
 
 
 def rotulavel(fatura):

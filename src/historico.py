@@ -178,6 +178,22 @@ def guardar(pasta, conteudo, nome_arquivo, vencimento, fechamento, hoje):
     return NOVA, f'Fatura {vencimento:%d/%m/%Y} guardada no histórico.'
 
 
+OUTRA_BASE = 'outra base'
+
+
+def guardada_em(pasta, conteudo):
+    # Vencimento da fatura guardada nesta pasta que é a mesma fatura (mesmos lançamentos) ou outra exportação
+    # dela (uma contém todos os lançamentos da outra: exportação parcial, ou mais nova). Senão None.
+    # Usado para recusar a mesma fatura nas duas bases (reais e simuladas não se misturam).
+    nova = lancamentos(ft.ler_csv(ft.decodificar(conteudo)))
+    entradas, erros = carregar_historico(pasta)
+    for entrada in entradas:
+        guardada = lancamentos(entrada['df'])
+        if contem(guardada, nova) or contem(nova, guardada):
+            return entrada['vencimento']
+    return None
+
+
 def remover(pasta, vencimento):
     caminho = caminho_da_fatura(pasta, vencimento)
     if os.path.exists(caminho):

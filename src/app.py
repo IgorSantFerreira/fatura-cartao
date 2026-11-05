@@ -14,6 +14,7 @@ import streamlit as st
 import fatura as ft
 import historico as hist
 import metas as mt
+import modelo as ml
 import rotulos as rt
 
 
@@ -32,12 +33,14 @@ CAMINHOS = {
         , 'metas': os.environ.get('FATURA_METAS', str(PASTA_DADOS / 'metas_usuario.json'))
         , 'historico': os.environ.get('FATURA_HISTORICO', str(PASTA_DADOS / 'historico'))
         , 'rotulos': os.environ.get('FATURA_ROTULOS', str(PASTA_DADOS / 'rotulos.json'))
+        , 'rejeitadas': os.environ.get('FATURA_REJEITADAS', str(PASTA_DADOS / 'sugestoes_rejeitadas.json'))
       }
     , SIMULADAS: {
           'regras': str(PASTA_SIMULADAS / 'regras_usuario.json')
         , 'metas': str(PASTA_SIMULADAS / 'metas_usuario.json')
         , 'historico': str(PASTA_SIMULADAS / 'historico')
         , 'rotulos': str(PASTA_SIMULADAS / 'rotulos.json')
+        , 'rejeitadas': str(PASTA_SIMULADAS / 'sugestoes_rejeitadas.json')
       }
 }
 COR_BARRA = '#2a78d6'
@@ -154,6 +157,7 @@ ARQUIVO_REGRAS = CAMINHOS[base]['regras']
 ARQUIVO_METAS = CAMINHOS[base]['metas']
 PASTA_HISTORICO = CAMINHOS[base]['historico']
 ARQUIVO_ROTULOS = CAMINHOS[base]['rotulos']
+ARQUIVO_REJEITADAS = CAMINHOS[base]['rejeitadas']
 if base == SIMULADAS:
     st.markdown('**Base de dados: Faturas simuladas.** Tudo o que for guardado aqui fica separado das suas faturas reais.')
 else:
@@ -227,6 +231,30 @@ if datas_validas:
 
 # ---------------------------------------------------------------- histórico: guardar esta fatura
 
+OUTRA_BASE = SIMULADAS if base == MINHAS else MINHAS
+
+
+def recusa_da_outra_base(conteudo):
+    # A mesma fatura não pode ficar nas duas bases: uma fatura real aberta por engano na base simulada
+    # (ou o contrário) é recusada, para os dados reais nunca irem parar na demonstração ou no treino do ML.
+    # Não depende das datas: vale também para arquivo sem data no nome ou com fechamento inválido.
+    ja_guardada = hist.guardada_em(CAMINHOS[OUTRA_BASE]['historico'], conteudo)
+    if ja_guardada is None:
+        return None
+    return hist.OUTRA_BASE, (
+        f'Não guardei: esta fatura já está guardada na base "{OUTRA_BASE}" (vencimento {ja_guardada:%d/%m/%Y}), '
+        + 'ou é outra exportação dela. A mesma fatura não pode ficar nas duas bases, para não misturar faturas '
+        + 'reais e simuladas. Nesta base ela fica só para consulta: nada dela é gravado aqui.'
+    )
+
+
+def guardar_na_base(conteudo, nome_arquivo, vence, fecha):
+    recusa = recusa_da_outra_base(conteudo)
+    if recusa is not None:
+        return recusa
+    return hist.guardar(PASTA_HISTORICO, conteudo, nome_arquivo, vence, fecha, hist.data_de_hoje())
+
+
 # Guarda uma vez por arquivo/vencimento/fechamento nesta sessão. Assim uma fatura removida do histórico
 # não volta sozinha no próximo clique, e corrigir o fechamento na barra lateral atualiza a guardada.
 situacao_historico = None
@@ -239,10 +267,18 @@ if datas_validas:
     processadas = st.session_state.setdefault('historico_processado', {})
     if marca not in processadas:
         try:
-            processadas[marca] = hist.guardar(PASTA_HISTORICO, arquivo.getvalue(), arquivo.name, vencimento, fechamento, hist.data_de_hoje())
+            processadas[marca] = guardar_na_base(arquivo.getvalue(), arquivo.name, vencimento, fechamento)
         except (OSError, ValueError) as erro:
             processadas[marca] = (hist.ERRO, f'Não consegui guardar a fatura no histórico: {erro}')
     situacao_historico, mensagem_historico = processadas[marca]
+else:
+    # Sem datas válidas a fatura não é guardada, mas se ela é da outra base continua só para consulta.
+    try:
+        recusa = recusa_da_outra_base(arquivo.getvalue())
+    except (OSError, ValueError) as erro:
+        recusa = (hist.ERRO, f'Não consegui conferir se esta fatura é da outra base: {erro}')
+    if recusa is not None:
+        situacao_historico, mensagem_historico = recusa
 
 entradas, erros_historico = hist.carregar_historico(PASTA_HISTORICO)
 montadas = hist.montar(entradas, regras_usuario)
@@ -268,6 +304,16 @@ if erro_origens:
         ft.escapar_markdown(erro_origens)
         + ' A origem dos rótulos não será registrada até esse arquivo ser corrigido; os rótulos continuam valendo.'
     )
+
+
+conjunto = rt.conjunto_rotulado(montadas, rotulos_usuario, origens_rotulos, 'simuladas' if base == SIMULADAS else 'minhas')
+rejeitadas, erro_rejeitadas = rt.carregar_rejeitadas(ARQUIVO_REJEITADAS)
+
+
+@st.cache_resource(max_entries=4, show_spinner='Treinando o modelo com os seus rótulos...')
+def treinar_modelo(conjunto_para_treino, historico_para_treino):
+    # Em cache: só treina de novo quando os rótulos ou o histórico mudam.
+    return ml.treinar(conjunto_para_treino, historico_para_treino)
 
 
 def gravar_rotulos(novos, origem_por_chave):
@@ -318,14 +364,18 @@ pendentes = fatura[fatura['categoria'] == ft.A_CLASSIFICAR]
 if len(pendentes) > 0:
     st.warning(
         f'{len(pendentes)} lançamentos ({ft.reais_md(int(pendentes["centavos"].sum()))}) ainda não têm categoria. '
-        + 'Os totais por categoria podem mudar quando você classificá-los na aba **Classificar**.'
+        + (
+            'Para classificá-los, troque para a base onde esta fatura está guardada.'
+            if situacao_historico == hist.OUTRA_BASE
+            else 'Os totais por categoria podem mudar quando você classificá-los na aba **Classificar**.'
+        )
     )
 
 for linha in situacao_metas:
     if linha['estado'] != 'dentro':
         st.warning('Meta: ' + mt.frase_situacao(linha))
 
-if situacao_historico in [hist.ERRO, hist.DUPLICADA, hist.CONFLITO]:
+if situacao_historico in [hist.ERRO, hist.DUPLICADA, hist.CONFLITO, hist.OUTRA_BASE]:
     st.warning('Histórico: ' + ft.escapar_markdown(mensagem_historico))
 else:
     st.caption('Histórico: ' + ft.escapar_markdown(mensagem_historico))
@@ -826,7 +876,7 @@ with aba_meses:
                     resultados.append(f'{antiga.name}: sem a data de vencimento no nome, não guardei.')
                     continue
                 try:
-                    situacao, texto = hist.guardar(PASTA_HISTORICO, antiga.getvalue(), antiga.name, vence, vence - timedelta(days=7), hist.data_de_hoje())
+                    situacao, texto = guardar_na_base(antiga.getvalue(), antiga.name, vence, vence - timedelta(days=7))
                 except (OSError, ValueError) as erro:
                     texto = f'não consegui ler ({erro})'
                 resultados.append(f'{antiga.name}: {texto}')
@@ -840,7 +890,125 @@ with aba_meses:
 with aba_classificar:
     if erro_regras:
         st.error('Corrija ou apague o arquivo de categorias para poder classificar: ' + ft.escapar_markdown(ARQUIVO_REGRAS))
+    elif situacao_historico == hist.OUTRA_BASE:
+        # Fatura recusada (ela é da outra base): nada dela é gravado nesta base, nem regras nem rótulos.
+        st.warning(f'Esta fatura é da base "{OUTRA_BASE}". Para classificar ou conferir os lançamentos dela, troque para essa base na barra lateral.')
     else:
+        st.subheader('Sugestões do modelo')
+        a_sugerir = fatura[rt.rotulavel(fatura) & (fatura['categoria'] == ft.A_CLASSIFICAR)]
+        categorias_rotuladas = conjunto['rotulo'].nunique() if len(conjunto) > 0 else 0
+        if erro_rotulos or erro_rejeitadas:
+            st.warning(
+                'As sugestões do modelo estão desligadas até o arquivo de rótulos ou o de sugestões rejeitadas ser corrigido. '
+                + ft.escapar_markdown(erro_rejeitadas or '')
+            )
+        elif len(a_sugerir) == 0:
+            st.write('Nenhum lançamento a classificar nesta fatura.')
+        elif categorias_rotuladas < 2:
+            st.info(
+                'Ainda não dá para sugerir: o modelo aprende com os estabelecimentos que você conferiu nesta base '
+                + f'(abaixo, em "Conferir categorias") e precisa de pelo menos 2 categorias diferentes. Hoje há {categorias_rotuladas}.'
+            )
+        else:
+            treinado = treinar_modelo(conjunto, ml.historico_estabelecimentos(montadas))
+            linhas_sugerir = pd.DataFrame({
+                  'descricao': a_sugerir['descricao']
+                , 'centavos': a_sugerir['centavos']
+                , 'data': a_sugerir['data']
+                , 'vencimento': [vencimento] * len(a_sugerir)
+                , 'parcela_total': a_sugerir['parcela_total']
+                , 'chave': a_sugerir['chave']
+            })
+            sugestoes = ml.sugerir(treinado, linhas_sugerir)
+            escondidas = 0
+            visiveis = []
+            for item in sugestoes.itertuples(index=False):
+                if item.categoria in rejeitadas.get(item.chave, []):
+                    escondidas = escondidas + 1
+                else:
+                    visiveis.append(item)
+            st.caption(
+                f'Modelo: {ml.TIPO_APP}, treinado com {len(conjunto)} lançamento(s) de {conjunto["chave"].nunique()} '
+                + f'estabelecimento(s) que você conferiu nesta base, em {categorias_rotuladas} categorias. '
+                + 'Confiança: a probabilidade que o modelo dá à categoria sugerida, sem calibração. '
+                + ml.texto_da_confianca() + ' Nada muda de categoria sem você aceitar.'
+            )
+            if escondidas > 0:
+                st.caption(f'{escondidas} sugestão(ões) que você rejeitou não aparecem mais.')
+            if len(visiveis) == 0:
+                st.write('Nenhuma sugestão nova.')
+            else:
+                # A "rodada" entra na key: depois de salvar, os campos voltam ao padrão (inclusive no navegador).
+                rodada = st.session_state.get('rodada_sugestoes', 0)
+                totais_a_sugerir = a_sugerir.groupby('chave')['centavos'].sum()
+                nomes_a_sugerir = a_sugerir.groupby('chave')['estabelecimento'].first()
+                with st.form('form_sugestoes'):
+                    for item in visiveis:
+                        st.markdown(
+                            f'**{ft.escapar_markdown(nomes_a_sugerir[item.chave])}** '
+                            + f'({ft.reais_md(int(totais_a_sugerir[item.chave]))}): o modelo sugere '
+                            + f'**{ft.escapar_markdown(item.categoria)}**, com confiança de {item.confianca:.0%}.'
+                        )
+                        if item.parecidos:
+                            parecidos = []
+                            for nome_parecido, categoria_parecida in item.parecidos:
+                                parecidos.append(f'{nome_parecido} ({categoria_parecida})')
+                            # É uma pista para o usuário, não o motivo do modelo: ele também usa valor e histórico.
+                            st.caption('Nomes parecidos que você já conferiu: ' + ft.escapar_markdown(', '.join(parecidos)) + '.')
+                        else:
+                            st.caption('Nenhum estabelecimento conferido tem nome parecido; a sugestão vem do valor e de quantas vezes ele aparece nas faturas.')
+                        coluna_acao, coluna_categoria = st.columns([3, 2])
+                        coluna_acao.radio(
+                              f'O que fazer com {ft.escapar_markdown(nomes_a_sugerir[item.chave])}'
+                            , ['Decidir depois', 'Aceitar', 'Rejeitar', 'Corrigir']
+                            , horizontal=True
+                            , key=f'sugestao_acao_{item.chave}_{rodada}'
+                        )
+                        # Começa na categoria sugerida: "Corrigir" sem mexer aqui vale como aceitar, nunca grava a 1ª da lista.
+                        coluna_categoria.selectbox(
+                              'Se for corrigir, a categoria certa'
+                            , rt.CATEGORIAS_ROTULO
+                            , index=rt.CATEGORIAS_ROTULO.index(item.categoria) if item.categoria in rt.CATEGORIAS_ROTULO else 0
+                            , key=f'sugestao_categoria_{item.chave}_{rodada}'
+                        )
+                    salvar_sugestoes = st.form_submit_button('Salvar decisões')
+                if salvar_sugestoes:
+                    novas_regras = dict(regras_usuario)
+                    novos_rotulos = dict(rotulos_usuario)
+                    novas_rejeitadas = rejeitadas
+                    origem_por_chave = {}
+                    contagem = {'Aceitar': 0, 'Rejeitar': 0, 'Corrigir': 0}
+                    for item in visiveis:
+                        acao = st.session_state[f'sugestao_acao_{item.chave}_{rodada}']
+                        if acao == 'Decidir depois':
+                            continue
+                        contagem[acao] = contagem[acao] + 1
+                        if acao == 'Rejeitar':
+                            novas_rejeitadas = rt.rejeitar(novas_rejeitadas, item.chave, item.categoria)
+                            continue
+                        categoria_final = item.categoria
+                        origem_por_chave[item.chave] = rt.ORIGEM_ACEITOU_MODELO
+                        if acao == 'Corrigir':
+                            categoria_final = st.session_state[f'sugestao_categoria_{item.chave}_{rodada}']
+                            if categoria_final != item.categoria:
+                                origem_por_chave[item.chave] = rt.ORIGEM_CORRIGIU_MODELO
+                        exemplo_sugestao = a_sugerir[a_sugerir['chave'] == item.chave].iloc[0]
+                        novas_regras = ft.aplicar_escolha(novas_regras, exemplo_sugestao['descricao'], int(exemplo_sugestao['centavos']), categoria_final)
+                        novos_rotulos = rt.registrar_escolha(novos_rotulos, fatura, item.chave, categoria_final)
+                    if sum(contagem.values()) == 0:
+                        st.info('Nenhuma decisão escolhida.')
+                    else:
+                        ft.salvar_regras_usuario(ARQUIVO_REGRAS, novas_regras)
+                        gravar_rotulos(novos_rotulos, origem_por_chave)
+                        rt.salvar_rejeitadas(ARQUIVO_REJEITADAS, novas_rejeitadas)
+                        st.session_state['rodada_sugestoes'] = rodada + 1
+                        st.session_state['mensagem'] = (
+                            f'{contagem["Aceitar"]} sugestão(ões) aceita(s), {contagem["Corrigir"]} corrigida(s), '
+                            + f'{contagem["Rejeitar"]} rejeitada(s).'
+                        )
+                        st.rerun()
+
+        st.subheader('Classificar à mão')
         st.write(
             'Escolha a categoria dos lançamentos que o app não reconheceu. '
             + 'A escolha vale para o estabelecimento e fica salva para as próximas faturas.'
@@ -957,7 +1125,6 @@ with aba_classificar:
                         st.session_state['mensagem'] = f'{conferidos} estabelecimento(s) conferido(s), {removidos} rótulo(s) removido(s).'
                         st.rerun()
 
-            conjunto = rt.conjunto_rotulado(montadas, rotulos_usuario, origens_rotulos, 'simuladas' if base == SIMULADAS else 'minhas')
             st.caption(
                 f'Na base "{base}": {len(conjunto)} lançamento(s) rotulado(s), de {conjunto["chave"].nunique()} estabelecimento(s), '
                 + f'em {conjunto["vencimento"].nunique()} fatura(s) do histórico.'
