@@ -25,6 +25,8 @@ def regras(tmp_path, monkeypatch):
     monkeypatch.setenv('FATURA_ROTULOS', str(tmp_path / 'rotulos.json'))
     monkeypatch.setenv('FATURA_SIMULADAS', str(tmp_path / 'simuladas'))
     monkeypatch.setenv('FATURA_REJEITADAS', str(tmp_path / 'sugestoes_rejeitadas.json'))
+    # Previsão por ML com uma população fictícia pequena: os testes do app olham a tela, não a qualidade do modelo.
+    monkeypatch.setenv('FATURA_PREVISAO_PESSOAS', '8,6')
     return caminho
 
 
@@ -1130,3 +1132,185 @@ def test_fatura_da_outra_base_com_datas_invalidas_tambem_nao_grava_na_base_errad
     assert not app2.exception
     for rotulo in salvar:
         assert all(botao.label != rotulo for botao in app2.button), ('fechamento inválido', rotulo)
+
+
+# ---------------------------------------------------------------- fase 3: previsão do fechamento por ML
+
+import previsao as pv
+
+
+DEZEMBRO = (
+      'date,title,amount\n'
+    + '2026-11-20,Restaurante Bom Prato,"987,65"\n'
+    + '2026-12-01,Auto Posto Primavera,"876,54"\n'
+).encode('utf-8')
+
+
+def um_mes_antes(conteudo):
+    # A fatura de exemplo com todas as datas um mês antes: uma fatura anterior de tamanho parecido.
+    linhas = conteudo.decode('utf-8').splitlines()
+    novas = [linhas[0]]
+    for linha in linhas[1:]:
+        data, resto = linha.split(',', 1)
+        novas.append(ft.somar_meses(date.fromisoformat(data), -1).isoformat() + ',' + resto)
+    return ('\n'.join(novas) + '\n').encode('utf-8')
+
+
+ANTERIOR_PARECIDA = um_mes_antes(CONTEUDO_EXEMPLO)
+DATAS_ANTERIOR = (date(2026, 10, 25), date(2026, 10, 18))
+
+
+def guardar_anterior_parecida(pasta_historico):
+    hist.guardar(str(pasta_historico), ANTERIOR_PARECIDA, 'Nubank_2026-10-25.csv', DATAS_ANTERIOR[0], DATAS_ANTERIOR[1], date(2026, 11, 4))
+
+
+@pytest.fixture(scope='module')
+def treinado_dos_testes():
+    # O mesmo modelo que o app treina com FATURA_PREVISAO_PESSOAS="8,6" (fixture regras).
+    return pv.treinar_para_app(pessoas_treino=8, pessoas_calibracao=6)
+
+
+def previsao_esperada(treinado, anteriores):
+    curvas = []
+    for conteudo, vencimento, fechamento in anteriores:
+        fatura = ft.montar_fatura(ft.ler_csv(conteudo), {})
+        datas = ft.ciclo(vencimento, fechamento)
+        curvas.append(pv.curva(fatura, datas['inicio'], datas['ultimo_dia']))
+    return pv.prever(treinado, ft.montar_fatura(ft.ler_csv(CONTEUDO_EXEMPLO), {}), date(2026, 10, 18), date(2026, 11, 17), date(2026, 11, 4), curvas)
+
+
+def test_previsao_sem_historico_avisa_e_fica_so_a_projecao(pasta_historico):
+    app = abrir_com_exemplo()
+    assert not app.exception
+    texto = textos(app)
+    assert 'Previsão por aprendizado de máquina' in [cabecalho.value for cabecalho in app.subheader]
+    assert pv.HISTORICO_MINIMO > 0
+    assert 'Ainda não há histórico suficiente para a previsão por aprendizado de máquina' in texto
+    assert f'pelo menos {pv.HISTORICO_MINIMO} fatura(s) completa(s) anterior(es)' in texto
+    assert 'e há 0.' in texto
+    assert 'Previsto pelo modelo no fechamento' not in metricas(app)
+
+
+def test_previsao_com_uma_fatura_anterior_mostra_o_valor_do_modelo(pasta_historico, treinado_dos_testes):
+    guardar_anterior_parecida(pasta_historico)
+    app = abrir_com_exemplo()
+    assert not app.exception
+    esperado = previsao_esperada(treinado_dos_testes, [(ANTERIOR_PARECIDA,) + DATAS_ANTERIOR])
+    assert pv.HISTORICO_MINIMO <= 1
+    assert esperado['fora_do_treino'] == []
+    valores = metricas(app)
+    assert valores['Previsto pelo modelo no fechamento'] == ft.reais(esperado['previsto'])
+    assert valores['Pelo ritmo atual'] == ft.reais(esperado['linear'])
+    assert valores['Gasto até agora'] == 'R$ 2.508,14'
+    texto = textos(app)
+    assert 'aprendeu com 8 pessoas fictícias' in texto
+    assert 'Ele não usa as suas faturas para aprender' in texto
+    assert 'baixo' in esperado
+    assert f'de {ft.reais_md(esperado["baixo"])} a {ft.reais_md(esperado["alto"])}' in texto
+
+
+def test_previsao_ignora_fatura_posterior(pasta_historico, treinado_dos_testes):
+    guardar_anterior_parecida(pasta_historico)
+    # Uma fatura posterior completa (guardada depois do fechamento) não pode entrar no histórico da previsão.
+    hist.guardar(str(pasta_historico), DEZEMBRO, 'Nubank_2026-12-25.csv', date(2026, 12, 25), date(2026, 12, 18), date(2027, 1, 2))
+    app = abrir_com_exemplo()
+    assert not app.exception
+    esperado = previsao_esperada(treinado_dos_testes, [(ANTERIOR_PARECIDA,) + DATAS_ANTERIOR])
+    assert metricas(app)['Previsto pelo modelo no fechamento'] == ft.reais(esperado['previsto'])
+
+
+def test_previsao_com_historico_muito_diferente_nao_mostra_numero_do_modelo(pasta_historico):
+    # A fatura de outubro dos testes tem R$ 300 e a atual, R$ 2.508: fora do que o modelo viu no treino.
+    guardar_outubro(pasta_historico)
+    app = abrir_com_exemplo()
+    assert not app.exception
+    assert 'O gasto deste ciclo está fora do que o modelo viu nas pessoas fictícias do treino' in textos(app)
+    assert 'Previsto pelo modelo no fechamento' not in metricas(app)
+
+
+def test_previsao_com_compras_encerradas_nao_inventa_numero(pasta_historico):
+    guardar_anterior_parecida(pasta_historico)
+    app = abrir_com_exemplo()
+    app.sidebar.date_input(key='hoje').set_value(date(2026, 11, 20))
+    app.run()
+    assert not app.exception
+    assert 'O último dia de compras deste ciclo é 17/11/2026: a partir dele não há dias pela frente para prever.' in textos(app)
+    assert 'Previsto pelo modelo no fechamento' not in metricas(app)
+
+
+def test_orcamento_da_fatura_inteira_alerta_pela_previsao_do_modelo(pasta_historico, regras, treinado_dos_testes):
+    guardar_anterior_parecida(pasta_historico)
+    esperado = previsao_esperada(treinado_dos_testes, [(ANTERIOR_PARECIDA,) + DATAS_ANTERIOR])
+    atual = 250814
+    # Orçamento entre o gasto até agora e a previsão do modelo: só a previsão do modelo faz o alerta aparecer.
+    assert esperado['previsto'] > atual + 2
+    orcamento = (atual + esperado['previsto']) // 2
+    app = abrir_com_exemplo()
+    app.checkbox(key='meta_fatura_inteira').check()
+    app.number_input(key='meta_valor').set_value(orcamento / 100)
+    clicar(app, 'Salvar meta')
+    assert not app.exception
+    salvo = json.loads((regras.parent / 'metas_usuario.json').read_text(encoding='utf-8'))
+    assert salvo == {'metas': [{'categorias': ft.CATEGORIAS_ESCOLHA, 'centavos': orcamento}]}
+    avisos = [aviso.value for aviso in app.warning if aviso.value.startswith('Meta: ')]
+    assert len(avisos) == 1
+    assert ft.escapar_markdown('Fatura inteira (todas as categorias)') in avisos[0]
+    assert f'pela previsão do modelo deve fechar em {ft.reais_md(esperado["previsto"])}' in avisos[0]
+
+
+# ---------------------------------------------------------------- casos-limite
+
+def test_red_team_at2_primeiro_dia_do_ciclo_nao_culpa_o_gasto(pasta_historico, treinado_dos_testes):
+    guardar_anterior_parecida(pasta_historico)
+    app = abrir_com_exemplo()
+    app.sidebar.date_input(key='hoje').set_value(date(2026, 10, 18))
+    app.run()
+    assert not app.exception
+    datas_anterior = ft.ciclo(*DATAS_ANTERIOR)
+    curva_anterior = pv.curva(ft.montar_fatura(ft.ler_csv(ANTERIOR_PARECIDA), {}), datas_anterior['inicio'], datas_anterior['ultimo_dia'])
+    esperado = pv.prever(treinado_dos_testes, ft.montar_fatura(ft.ler_csv(CONTEUDO_EXEMPLO), {}), date(2026, 10, 18), date(2026, 11, 17), date(2026, 10, 18), [curva_anterior])
+    assert 'fracao_decorrida' not in esperado['fora_do_treino'], esperado['fora_do_treino']
+    if esperado['fora_do_treino'] == []:
+        assert 'Previsto pelo modelo no fechamento' in metricas(app)
+        assert 'O gasto deste ciclo está fora do que o modelo viu' not in textos(app)
+
+
+def test_red_team_at3_anterior_que_fecha_depois_de_hoje_nao_entra_na_previsao(pasta_historico):
+    # Anterior com fechamento corrigido para 24/10 (compras até 23/10): em 20/10 ela ainda não estava fechada.
+    hist.guardar(str(pasta_historico), ANTERIOR_PARECIDA, 'Nubank_2026-10-25.csv', date(2026, 10, 25), date(2026, 10, 24), date(2026, 11, 4))
+    app = abrir_com_exemplo()
+    app.sidebar.date_input(key='hoje').set_value(date(2026, 10, 20))
+    app.run()
+    assert not app.exception
+    assert f'{pv.HISTORICO_MINIMO} fatura(s) completa(s) anterior(es) a esta guardada(s) nesta base, e há 0.' in textos(app)
+    assert 'Previsto pelo modelo no fechamento' not in metricas(app)
+
+
+def test_red_team_at4_fatura_da_outra_base_nao_usa_o_historico_desta_base(pasta_historico, regras):
+    simuladas = regras.parent / 'simuladas'
+    hist.guardar(str(simuladas / 'historico'), CONTEUDO_EXEMPLO, 'Nubank_2026-11-25.csv', date(2026, 11, 25), date(2026, 11, 18), date(2026, 11, 4))
+    guardar_anterior_parecida(pasta_historico)
+    app = abrir_com_exemplo()
+    assert not app.exception
+    assert any('já está guardada na base' in aviso.value for aviso in app.warning)
+    assert 'Previsto pelo modelo no fechamento' not in metricas(app)
+
+
+def test_red_team_at5_falha_inesperada_na_previsao_nao_derruba_o_app(pasta_historico, monkeypatch):
+    monkeypatch.setenv('FATURA_PREVISAO_PESSOAS', '3,2')
+    def quebra(*args, **kwargs):
+        raise RuntimeError('falha simulada no treino')
+    monkeypatch.setattr(pv, 'treinar_para_app', quebra)
+    app = abrir_com_exemplo()
+    assert not app.exception
+    assert 'Não consegui preparar a previsão por aprendizado de máquina' in textos(app)
+    assert 'Gasto no período' in metricas(app)
+    assert 'Fatura estimada no fechamento' in metricas(app)
+
+
+def test_red_team_at9_anterior_parcial_nao_conta_como_historico(pasta_historico):
+    hist.guardar(str(pasta_historico), ANTERIOR_PARECIDA, 'Nubank_2026-10-25.csv', date(2026, 10, 25), date(2026, 10, 18), date(2026, 10, 10))
+    app = abrir_com_exemplo()
+    assert not app.exception
+    assert f'{pv.HISTORICO_MINIMO} fatura(s) completa(s) anterior(es) a esta guardada(s) nesta base, e há 0.' in textos(app)
+    assert 'Previsto pelo modelo no fechamento' not in metricas(app)

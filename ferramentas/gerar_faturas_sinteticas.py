@@ -3,6 +3,7 @@
 # só os textos que o próprio Nubank gera para todo mundo ("Pagamento recebido", "IOF de compra internacional"...).
 #
 # Uso: py ferramentas/gerar_faturas_sinteticas.py [--meses 13] [--semente 2026] [--saida faturas_sinteticas]
+#      py ferramentas/gerar_faturas_sinteticas.py --pessoas 60 [--sem-salario]   (população da fase 3)
 # Mesma semente = mesmas faturas (reprodutível para o trabalho).
 
 import argparse
@@ -188,6 +189,111 @@ MESES_ATRASO = {4, 10}
 MESES_VIAGEM = {1, 5, 9}
 MESES_ESTORNO = {2, 6, 11}
 
+# ---------------------------------------------------------------- população de pessoas fictícias (fase 3)
+# Para a previsão do gasto no fechamento, o modelo é treinado com muitas pessoas fictícias, cada uma com o seu
+# jeito de gastar (perfil sorteado). O perfil da pessoa única acima (perfil_padrao) não muda: sem --pessoas, o
+# gerador produz exatamente os mesmos arquivos de antes.
+#
+# Efeito do salário, COLOCADO PELO GERADOR (por construção): nos dias logo depois do salário, as compras do dia
+# a dia têm mais chance de acontecer. O peso de um dia é 1 + intensidade x (1 - dias desde o salário / duração),
+# enquanto estiver dentro da duração; fora dela, 1. Combina com o padrão de dia da semana (multiplica os pesos).
+# É o padrão que a projeção linear (ritmo constante) não capta. Numa fatura real ele pode não existir.
+
+SALARIO_QUINTO_DIA_UTIL = '5º dia útil'
+SALARIO_DIA_5 = 'dia 5'
+SALARIO_DIA_10 = 'dia 10'
+SALARIO_QUINZENA = 'quinzena (dias 5 e 20)'
+TIPOS_SALARIO = [SALARIO_QUINTO_DIA_UTIL, SALARIO_DIA_5, SALARIO_DIA_10, SALARIO_QUINZENA]
+# Vencimentos em que o ciclo começa até o dia 18: assim todo dia de cobrança de 1 a 28 cai dentro do ciclo.
+DIAS_VENCIMENTO = [10, 15, 20, 25]
+
+
+def perfil_padrao():
+    # A pessoa única das faturas da fase 2 (13 meses, semente 2026).
+    return {
+          'escala': 1.0
+        , 'frequencia': 1.0
+        , 'dia_vencimento': 25
+        , 'assinaturas': ASSINATURAS_FIXAS
+        , 'assinatura_dolar': ASSINATURA_DOLAR
+        , 'energia': ENERGIA
+        , 'meses_atraso': MESES_ATRASO
+        , 'meses_viagem': MESES_VIAGEM
+        , 'meses_estorno': MESES_ESTORNO
+        , 'gasto_inicial': 240000
+        , 'salario': None
+        , 'intensidade': 0.0
+        , 'duracao': 0
+        , 'efeito_salario': False
+    }
+
+
+def sortear_perfil(sorteio):
+    # Perfil de uma pessoa da população: quanto gasta, quantas compras faz, quando vence a fatura, que assinaturas
+    # tem (e em que dia são cobradas), em que meses viaja, atrasa ou recebe estorno, e o salário.
+    escala = sorteio.uniform(0.6, 1.8)
+    assinaturas = []
+    dias_por_nome = {}
+    for nome, categoria, centavos, dia_do_mes, primeiro, ultimo in ASSINATURAS_FIXAS:
+        if nome not in dias_por_nome:
+            # Cada assinatura (com as suas duas linhas, se tiver reajuste) entra ou não, num dia sorteado.
+            dias_por_nome[nome] = sorteio.randint(1, 28) if sorteio.random() < 0.6 else None
+        if dias_por_nome[nome] is not None:
+            assinaturas.append((nome, categoria, centavos, dias_por_nome[nome], primeiro, ultimo))
+    assinatura_dolar = None
+    if sorteio.random() < 0.5:
+        nome, categoria, dolares, dia_do_mes = ASSINATURA_DOLAR
+        assinatura_dolar = (nome, categoria, dolares, sorteio.randint(1, 28))
+    nome, categoria, minimo, maximo, dia_do_mes = ENERGIA
+    energia = (nome, categoria, int(minimo * escala), int(maximo * escala), sorteio.randint(1, 28))
+    return {
+          'escala': escala
+        , 'frequencia': sorteio.uniform(0.7, 1.4)
+        , 'dia_vencimento': sorteio.choice(DIAS_VENCIMENTO)
+        , 'assinaturas': assinaturas
+        , 'assinatura_dolar': assinatura_dolar
+        , 'energia': energia
+        , 'meses_atraso': set(sorteio.sample(range(12), sorteio.randint(0, 2)))
+        , 'meses_viagem': set(sorteio.sample(range(12), sorteio.randint(0, 3)))
+        , 'meses_estorno': set(sorteio.sample(range(12), sorteio.randint(1, 3)))
+        , 'gasto_inicial': int(240000 * escala)
+        , 'salario': sorteio.choice(TIPOS_SALARIO)
+        , 'intensidade': sorteio.uniform(0.5, 3.0)
+        , 'duracao': sorteio.randint(4, 10)
+        , 'efeito_salario': True
+    }
+
+
+def dias_de_salario(tipo, ano, mes):
+    if tipo == SALARIO_DIA_5:
+        return [date(ano, mes, 5)]
+    if tipo == SALARIO_DIA_10:
+        return [date(ano, mes, 10)]
+    if tipo == SALARIO_QUINZENA:
+        return [date(ano, mes, 5), date(ano, mes, 20)]
+    # 5º dia útil: o quinto dia de segunda a sexta do mês (feriados não são considerados).
+    uteis = 0
+    dia = date(ano, mes, 1)
+    while True:
+        if dia.weekday() < 5:
+            uteis = uteis + 1
+            if uteis == 5:
+                return [dia]
+        dia = dia + timedelta(days=1)
+
+
+def peso_do_salario(perfil, dia):
+    # Peso extra de um dia por estar logo depois de um salário (1 = sem efeito). Olha também o mês anterior,
+    # porque o efeito de um salário no fim do mês pode continuar no começo do seguinte.
+    maior = 1.0
+    for meses in [-1, 0]:
+        referencia = somar_meses(date(dia.year, dia.month, 1), meses)
+        for pagamento in dias_de_salario(perfil['salario'], referencia.year, referencia.month):
+            distancia = (dia - pagamento).days
+            if 0 <= distancia < perfil['duracao']:
+                maior = max(maior, 1 + perfil['intensidade'] * (1 - distancia / perfil['duracao']))
+    return maior
+
 
 def somar_meses(dia, meses):
     indice = dia.year * 12 + dia.month - 1 + meses
@@ -204,20 +310,32 @@ def reais(centavos):
 
 
 class Gerador:
-    def __init__(self, semente):
+    def __init__(self, semente, perfil=None):
         self.sorteio = random.Random(semente)
+        self.perfil = perfil if perfil is not None else perfil_padrao()
+        # Peso de cada dia do ciclo além do dia da semana. None = pessoa única da fase 2 (sorteio de antes).
+        # Na população: o efeito do salário, ou 1 em todo dia no cenário de controle (sem efeito).
+        self.peso_do_dia = None
 
     def valor(self, minimo, maximo):
-        return int(round(self.sorteio.uniform(minimo, maximo) * 100))
+        escala = self.perfil['escala']
+        return int(round(self.sorteio.uniform(minimo * escala, maximo * escala) * 100))
+
+    def quantos(self, quantidade):
+        # Pessoas que compram mais ou menos vezes que a pessoa padrão (frequencia 1 = o mesmo número).
+        return int(round(quantidade * self.perfil['frequencia']))
 
     def dia_no_ciclo(self, inicio, fim, pesos=None):
         # pesos: peso de cada dia da semana (segunda = 0). Sem pesos, qualquer dia do ciclo tem a mesma chance.
         dias = []
         for deslocamento in range((fim - inicio).days + 1):
             dias.append(inicio + timedelta(days=deslocamento))
-        if pesos is None:
-            return self.sorteio.choice(dias)
-        return self.sorteio.choices(dias, weights=[pesos[dia.weekday()] for dia in dias])[0]
+        if self.peso_do_dia is None:
+            if pesos is None:
+                return self.sorteio.choice(dias)
+            return self.sorteio.choices(dias, weights=[pesos[dia.weekday()] for dia in dias])[0]
+        semana = [1] * 7 if pesos is None else pesos
+        return self.sorteio.choices(dias, weights=[semana[dia.weekday()] * self.peso_do_dia(dia) for dia in dias])[0]
 
     def escolher(self, lista, quantidade):
         return [self.sorteio.choice(lista) for _ in range(quantidade)]
@@ -230,15 +348,24 @@ def dia_fixo(inicio, fim, dia_do_mes):
     return date(fim.year, fim.month, dia_do_mes)
 
 
-def gerar(meses, semente, primeiro_vencimento):
-    gerador = Gerador(semente)
+def gerar(meses, semente, primeiro_vencimento, perfil=None, com_salario=None):
+    # perfil None: a pessoa única da fase 2 (mesmos arquivos de antes). Com perfil (população): com_salario diz se
+    # o efeito do salário vale (True) ou se é o cenário de controle (False, mesmo perfil sem o efeito).
+    gerador = Gerador(semente, perfil)
+    perfil = gerador.perfil
+    if com_salario is True:
+        gerador.peso_do_dia = lambda dia: peso_do_salario(perfil, dia)
+    elif com_salario is False:
+        gerador.peso_do_dia = lambda dia: 1.0
     faturas = []
     parcelas_pendentes = []
-    gasto_anterior = 240000
+    gasto_anterior = perfil['gasto_inicial']
     for posicao in range(meses):
-        vencimento = somar_meses(primeiro_vencimento, posicao).replace(day=25)
-        inicio = somar_meses(vencimento, -1).replace(day=18)
-        fim = vencimento.replace(day=17)
+        # Nubank: fecha 7 dias antes do vencimento; o último dia de compras é a véspera do fechamento.
+        # Com vencimento dia 25: compras de 18 do mês anterior a 17 do mês do vencimento.
+        vencimento = somar_meses(primeiro_vencimento, posicao).replace(day=perfil['dia_vencimento'])
+        inicio = somar_meses(vencimento, -1) - timedelta(days=7)
+        fim = vencimento - timedelta(days=8)
         linhas = []
 
         def lancar(dia, titulo, centavos, categoria, comportamento):
@@ -249,40 +376,41 @@ def gerar(meses, semente, primeiro_vencimento):
                 lancar(gerador.dia_no_ciclo(inicio, fim, pesos), nome, gerador.valor(minimo, maximo), categoria, OCASIONAL)
 
         # Assinaturas e contas fixas.
-        for nome, categoria, centavos, dia_do_mes, primeiro, ultimo in ASSINATURAS_FIXAS:
+        for nome, categoria, centavos, dia_do_mes, primeiro, ultimo in perfil['assinaturas']:
             if primeiro <= posicao <= ultimo:
                 lancar(dia_fixo(inicio, fim, dia_do_mes), nome, centavos, categoria, RECORRENTE)
-        nome, categoria, dolares, dia_do_mes = ASSINATURA_DOLAR
-        cambio = gerador.sorteio.uniform(5.15, 5.75)
-        em_reais = int(round(dolares * cambio))
-        dia = dia_fixo(inicio, fim, dia_do_mes)
-        lancar(dia, nome, em_reais, categoria, RECORRENTE)
-        lancar(dia, 'IOF de compra internacional', int(round(em_reais * IOF_INTERNACIONAL)), ENCARGOS, ENCARGO)
-        nome, categoria, minimo, maximo, dia_do_mes = ENERGIA
+        if perfil['assinatura_dolar'] is not None:
+            nome, categoria, dolares, dia_do_mes = perfil['assinatura_dolar']
+            cambio = gerador.sorteio.uniform(5.15, 5.75)
+            em_reais = int(round(dolares * cambio))
+            dia = dia_fixo(inicio, fim, dia_do_mes)
+            lancar(dia, nome, em_reais, categoria, RECORRENTE)
+            lancar(dia, 'IOF de compra internacional', int(round(em_reais * IOF_INTERNACIONAL)), ENCARGOS, ENCARGO)
+        nome, categoria, minimo, maximo, dia_do_mes = perfil['energia']
         lancar(dia_fixo(inicio, fim, dia_do_mes), nome, gerador.sorteio.randint(minimo, maximo), categoria, RECORRENTE)
 
         # Comida e bebida: muito delivery, mercado, padaria e lanches.
         deliveries = []
-        for nome, minimo, maximo in gerador.escolher(DELIVERY, gerador.sorteio.randint(4, 7)):
+        for nome, minimo, maximo in gerador.escolher(DELIVERY, gerador.quantos(gerador.sorteio.randint(4, 7))):
             dia = gerador.dia_no_ciclo(inicio, fim, PESOS_FIM_DE_SEMANA)
             centavos = gerador.valor(minimo, maximo)
             lancar(dia, nome, centavos, COMIDA, OCASIONAL)
             deliveries.append((dia, centavos))
-        sortear(MERCADO, COMIDA, gerador.sorteio.randint(2, 4), PESOS_SABADO)
-        sortear(RESTAURANTE, COMIDA, gerador.sorteio.randint(1, 3), PESOS_DIA_UTIL)
+        sortear(MERCADO, COMIDA, gerador.quantos(gerador.sorteio.randint(2, 4)), PESOS_SABADO)
+        sortear(RESTAURANTE, COMIDA, gerador.quantos(gerador.sorteio.randint(1, 3)), PESOS_DIA_UTIL)
 
         # Transporte: combustível (o maior peso), estacionamento, metrô, corridas e um ou outro gasto com o carro.
-        sortear(POSTO, TRANSPORTE, gerador.sorteio.choice([2, 3, 3, 3, 4]))
-        sortear(ESTACIONAMENTO, TRANSPORTE, gerador.sorteio.randint(2, 4), PESOS_DIA_UTIL)
-        for _ in range(gerador.sorteio.randint(2, 6)):
+        sortear(POSTO, TRANSPORTE, gerador.quantos(gerador.sorteio.choice([2, 3, 3, 3, 4])))
+        sortear(ESTACIONAMENTO, TRANSPORTE, gerador.quantos(gerador.sorteio.randint(2, 4)), PESOS_DIA_UTIL)
+        for _ in range(gerador.quantos(gerador.sorteio.randint(2, 6))):
             numero = gerador.sorteio.randint(100000000, 199999999)
             lancar(gerador.dia_no_ciclo(inicio, fim, PESOS_DIA_UTIL), f'Emv Metrô*{numero}', 540, TRANSPORTE, OCASIONAL)
-        sortear(CORRIDA, TRANSPORTE, gerador.sorteio.randint(1, 4), PESOS_DIA_UTIL)
+        sortear(CORRIDA, TRANSPORTE, gerador.quantos(gerador.sorteio.randint(1, 4)), PESOS_DIA_UTIL)
         if gerador.sorteio.random() < 0.3:
             sortear(OUTRO_TRANSPORTE, TRANSPORTE, 1)
 
         # Compras, de vez em quando parceladas.
-        sortear(COMPRAS_LISTA, COMPRAS, gerador.sorteio.randint(0, 2))
+        sortear(COMPRAS_LISTA, COMPRAS, gerador.quantos(gerador.sorteio.randint(0, 2)))
         if gerador.sorteio.random() < 0.35:
             nome, minimo, maximo = gerador.sorteio.choice(COMPRAS_LISTA)
             vezes = gerador.sorteio.choice([3, 4, 6, 10])
@@ -290,17 +418,17 @@ def gerar(meses, semente, primeiro_vencimento):
             parcelas_pendentes.append([nome, COMPRAS, total // vezes, vezes, 1, gerador.dia_no_ciclo(inicio, fim)])
 
         # Viagem em dois meses: passagem e hospedagem parceladas, mais gastos no destino.
-        if posicao % 12 in MESES_VIAGEM:
+        if posicao % 12 in perfil['meses_viagem']:
             for nome, minimo, maximo, vezes in [('Latam Air', 600, 1400, 3), ('Airbnb * Hm' + str(gerador.sorteio.randint(10000, 99999)), 400, 900, 2)]:
                 total = gerador.valor(minimo, maximo)
                 parcelas_pendentes.append([nome, VIAGEM, total // vezes, vezes, 1, gerador.dia_no_ciclo(inicio, fim)])
             sortear(VIAGEM_LISTA, VIAGEM, gerador.sorteio.randint(2, 4))
 
-        sortear(JOGOS_LISTA, JOGOS, gerador.sorteio.choice([0, 0, 1, 1, 2]))
-        sortear(FARMACIA, SAUDE, gerador.sorteio.randint(1, 2))
+        sortear(JOGOS_LISTA, JOGOS, gerador.quantos(gerador.sorteio.choice([0, 0, 1, 1, 2])))
+        sortear(FARMACIA, SAUDE, gerador.quantos(gerador.sorteio.randint(1, 2)))
         if gerador.sorteio.random() < 0.3:
             sortear(SAUDE_LISTA, SAUDE, 1)
-        sortear(LAZER_LISTA, LAZER, gerador.sorteio.choice([0, 1, 1, 2]), PESOS_FIM_DE_SEMANA)
+        sortear(LAZER_LISTA, LAZER, gerador.quantos(gerador.sorteio.choice([0, 1, 1, 2])), PESOS_FIM_DE_SEMANA)
         sortear(CASA_EXTRA, CASA, gerador.sorteio.choice([0, 0, 1]))
 
         # Parcelas: a primeira no dia da compra, as seguintes no primeiro dia do ciclo (como no Nubank).
@@ -314,13 +442,13 @@ def gerar(meses, semente, primeiro_vencimento):
         parcelas_pendentes = restantes
 
         # Estorno de um delivery do próprio mês.
-        if posicao % 12 in MESES_ESTORNO and deliveries:
+        if posicao % 12 in perfil['meses_estorno'] and deliveries:
             dia, centavos = gerador.sorteio.choice(deliveries)
             lancar(min(dia + timedelta(days=1), fim), 'Estorno de compra (iFood)', -centavos, COMIDA, ESTORNO)
 
         # Pagamento da fatura anterior; em dois meses, pago com atraso (saldo pendente, multa, juros e IOF).
         dia_pagamento = somar_meses(vencimento, -1).replace(day=25)
-        if posicao % 12 in MESES_ATRASO:
+        if posicao % 12 in perfil['meses_atraso']:
             dia_pagamento = dia_pagamento + timedelta(days=gerador.sorteio.randint(2, 5))
             lancar(dia_pagamento - timedelta(days=2), 'Valor pendente do mês anterior', gasto_anterior, SALDO_ANTERIOR, MOVIMENTO)
             lancar(dia_pagamento, 'Multa por fatura atrasada', int(round(gasto_anterior * 0.02)), ENCARGOS, ENCARGO)
@@ -354,6 +482,98 @@ def gravar(faturas, saida):
         escritor.writerow(['fatura', 'date', 'title', 'amount', 'categoria_certa', 'comportamento'])
         escritor.writerows(gabarito)
     (pasta / 'LEIA-ME.txt').write_text(LEIA_ME, encoding='utf-8')
+
+
+def gerar_populacao(pessoas, meses, semente, primeiro_vencimento, com_salario=True):
+    # Cada pessoa tem o perfil e os sorteios das faturas vindos de sementes próprias (derivadas da semente geral).
+    # Com e sem o efeito do salário, a mesma semente dá as mesmas pessoas (mesmo perfil); só muda o efeito.
+    populacao = []
+    for numero in range(pessoas):
+        perfil = sortear_perfil(random.Random(f'perfil-{semente}-{numero}'))
+        populacao.append({
+              'pessoa': f'pessoa_{numero:03d}'
+            , 'perfil': perfil
+            , 'faturas': gerar(meses, f'faturas-{semente}-{numero}', primeiro_vencimento, perfil, com_salario)
+        })
+    return populacao
+
+
+def gravar_populacao(populacao, saida, com_salario):
+    pasta = Path(saida)
+    gabarito = []
+    perfis = []
+    for pessoa in populacao:
+        (pasta / 'faturas' / pessoa['pessoa']).mkdir(parents=True, exist_ok=True)
+        for vencimento, linhas in pessoa['faturas']:
+            nome = f'Nubank_{vencimento.isoformat()}.csv'
+            with open(pasta / 'faturas' / pessoa['pessoa'] / nome, 'w', encoding='utf-8', newline='') as arquivo:
+                escritor = csv.writer(arquivo, quoting=csv.QUOTE_MINIMAL, lineterminator='\n')
+                escritor.writerow(['date', 'title', 'amount'])
+                for dia, titulo, centavos, categoria, comportamento in linhas:
+                    escritor.writerow([dia.isoformat(), titulo, reais(centavos)])
+            for dia, titulo, centavos, categoria, comportamento in linhas:
+                gabarito.append([pessoa['pessoa'], nome, dia.isoformat(), titulo, reais(centavos), categoria, comportamento])
+        perfil = pessoa['perfil']
+        perfis.append([
+              pessoa['pessoa']
+            , f'{perfil["escala"]:.3f}'
+            , f'{perfil["frequencia"]:.3f}'
+            , perfil['dia_vencimento']
+            , perfil['salario']
+            , f'{perfil["intensidade"]:.3f}'
+            , perfil['duracao']
+            , 'sim' if com_salario else 'não'
+            , len(perfil['assinaturas'])
+            , '; '.join(f'{nome} dia {dia_do_mes}' for nome, categoria, centavos, dia_do_mes, primeiro, ultimo in perfil['assinaturas'])
+            , 'não' if perfil['assinatura_dolar'] is None else f'dia {perfil["assinatura_dolar"][3]}'
+            , perfil['energia'][4]
+            , ' '.join(str(mes) for mes in sorted(perfil['meses_viagem']))
+            , ' '.join(str(mes) for mes in sorted(perfil['meses_atraso']))
+            , ' '.join(str(mes) for mes in sorted(perfil['meses_estorno']))
+        ])
+    with open(pasta / 'gabarito.csv', 'w', encoding='utf-8', newline='') as arquivo:
+        escritor = csv.writer(arquivo, lineterminator='\n')
+        escritor.writerow(['pessoa', 'fatura', 'date', 'title', 'amount', 'categoria_certa', 'comportamento'])
+        escritor.writerows(gabarito)
+    with open(pasta / 'perfis.csv', 'w', encoding='utf-8', newline='') as arquivo:
+        escritor = csv.writer(arquivo, lineterminator='\n')
+        escritor.writerow([
+              'pessoa', 'escala', 'frequencia', 'dia_vencimento', 'salario', 'intensidade', 'duracao_dias'
+            , 'efeito_salario_ligado', 'assinaturas', 'dias_de_cobranca', 'assinatura_dolar', 'dia_conta_de_energia'
+            , 'meses_viagem', 'meses_atraso', 'meses_estorno'
+        ])
+        escritor.writerows(perfis)
+    (pasta / 'LEIA-ME.txt').write_text(LEIA_ME_POPULACAO, encoding='utf-8')
+
+
+LEIA_ME_POPULACAO = '''POPULAÇÃO DE PESSOAS FICTÍCIAS (100% FICTÍCIAS)
+
+Gerada por ferramentas/gerar_faturas_sinteticas.py --pessoas N, com semente fixa: rodar de novo gera os
+mesmos arquivos. Serve para treinar e avaliar a previsão do gasto no fechamento (fase 3).
+
+faturas/pessoa_NNN/Nubank_AAAA-MM-DD.csv
+  As faturas de cada pessoa, no formato do CSV do Nubank.
+
+gabarito.csv
+  Categoria certa e tipo de gasto de cada lançamento, com a pessoa e a fatura.
+
+perfis.csv
+  O perfil sorteado de cada pessoa: escala de gasto, frequência de compras, dia de vencimento, tipo de salário,
+  intensidade e duração do efeito do salário, se o efeito está ligado, as assinaturas e o dia de cobrança de
+  cada uma, a assinatura em dólar, o dia da conta de energia, e os meses de viagem, de atraso e de estorno
+  (posição do mês, 0 a 11).
+
+Padrões COLOCADOS PELO GERADOR (por construção)
+  - Efeito do salário: as compras do dia a dia ficam mais prováveis nos dias logo depois do salário
+    (5º dia útil, dia 5, dia 10 ou quinzena, dias 5 e 20), com intensidade e duração diferentes por pessoa.
+    Com --sem-salario, as mesmas pessoas são geradas sem esse efeito (cenário de controle).
+  - O padrão de dia da semana das faturas da fase 2 continua valendo.
+  - Assinaturas cobradas em dias fixos, parcelas no primeiro dia do ciclo, viagens e atrasos em meses sorteados.
+
+Limitações (para o trabalho)
+  - O modelo treinado com esta população aprende o jeito do gerador. Não há evidência de que pessoas reais
+    tenham esses padrões, nem com essa intensidade.
+'''
 
 
 LEIA_ME = '''FATURAS SINTÉTICAS (100% FICTÍCIAS)
@@ -395,8 +615,21 @@ def main():
     parser.add_argument('--semente', type=int, default=2026)
     parser.add_argument('--saida', default=str(Path(__file__).resolve().parent.parent / 'faturas_sinteticas'))
     parser.add_argument('--primeiro-vencimento', default='2025-10-25')
+    parser.add_argument('--pessoas', type=int, default=0, help='Gera uma população de N pessoas (fase 3).')
+    parser.add_argument('--sem-salario', action='store_true', help='Com --pessoas: as mesmas pessoas sem o efeito do salário.')
     argumentos = parser.parse_args()
-    faturas = gerar(argumentos.meses, argumentos.semente, date.fromisoformat(argumentos.primeiro_vencimento))
+    primeiro = date.fromisoformat(argumentos.primeiro_vencimento)
+    if argumentos.pessoas > 0:
+        saida = argumentos.saida
+        if saida == parser.get_default('saida'):
+            saida = str(Path(saida) / ('populacao_sem_salario' if argumentos.sem_salario else 'populacao'))
+        populacao = gerar_populacao(argumentos.pessoas, argumentos.meses, argumentos.semente, primeiro, not argumentos.sem_salario)
+        gravar_populacao(populacao, saida, not argumentos.sem_salario)
+        print(f'{len(populacao)} pessoas x {argumentos.meses} faturas em {saida}')
+        return
+    if argumentos.sem_salario:
+        parser.error('--sem-salario só vale com --pessoas.')
+    faturas = gerar(argumentos.meses, argumentos.semente, primeiro)
     gravar(faturas, argumentos.saida)
     print(f'{len(faturas)} faturas em {argumentos.saida}')
 

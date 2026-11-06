@@ -78,6 +78,20 @@ Para criar faturas simuladas:
 - O perfil de gasto é parecido com o de uma pessoa real, mas nenhum estabelecimento ou valor é copiado.
 - A pasta gerada fica fora do git, como todo CSV.
 
+Com `--pessoas 60`, o gerador cria uma **população de pessoas fictícias** em `faturas_sinteticas/populacao/`, usada na previsão do fechamento. Cada pessoa tem o próprio perfil sorteado:
+
+- quanto gasta e quantas compras faz;
+- o dia de vencimento;
+- as assinaturas e os dias de cobrança;
+- os meses de viagem e de atraso;
+- o tipo de salário (5º dia útil, dia 5, dia 10 ou quinzena), com intensidade e duração próprias do efeito do salário.
+
+O perfil de cada pessoa fica em `perfis.csv`.
+
+- **Efeito do salário, colocado de propósito:** as compras do dia a dia ficam mais prováveis nos dias logo depois do salário.
+- **Cenário de controle:** `--sem-salario` gera as mesmas pessoas sem esse efeito.
+- **Faturas da fase 2:** sem `--pessoas`, o gerador produz exatamente os mesmos arquivos de antes.
+
 ## Rótulos para o ML (aba Classificar)
 
 Em **Conferir categorias**, marque "conferido" em cada estabelecimento depois de confirmar a categoria, **inclusive quando o app já acertou**. Só os conferidos viram exemplos para treinar e avaliar o modelo. Sem essa confirmação, o modelo apenas copiaria as regras do app.
@@ -112,6 +126,33 @@ O modelo usa o nome do estabelecimento (pedaços de 2 a 4 letras), o valor, em q
 
 A confiança mostrada **não é calibrada** e tende a ser otimista. O app cita os números medidos no notebook (guardados em `src/modelo.py`, `CALIBRACAO_SUGESTOES`): nos 31 estabelecimentos que as regras não reconheciam, o modelo dizia em média 56% e acertou 45%. As calibrações testadas (sigmoide e temperatura) ou baixaram o acerto ou pioraram a calibração, então nenhuma foi para o app.
 
+## Previsão do fechamento (aba Até o fechamento)
+
+Além da estimativa pelo ritmo ("se continuar gastando assim"), o app prevê o gasto do período no fechamento com uma **Random Forest**. O modelo não aprende com as suas faturas: ele é treinado com 80 pessoas fictícias do gerador, e o erro é medido em outras 40, que ele não viu. O treino acontece na primeira vez que o app abre (cerca de meio minuto) e não grava nenhum arquivo.
+
+Para prever, o modelo olha:
+
+- o gasto deste ciclo até a data de "Considerar compras até";
+- as faturas **completas** anteriores guardadas na base em uso, no máximo as 12 mais recentes.
+
+Nada com data depois de "hoje" entra na previsão. Também ficam de fora as faturas posteriores, as que ainda não tinham fechado em "hoje" e as faturas parciais. Uma fatura que está guardada na outra base não recebe previsão: a previsão nunca mistura faturas reais e simuladas.
+
+Nos testes, o modelo não foi melhor que uma conta simples (o gasto até agora mais o que a pessoa costuma gastar depois deste dia do ciclo): empatou numa população e ficou um pouco pior em outra. O app diz que o modelo não foi melhor que essa conta. A vantagem sobre a estimativa pelo ritmo vem de usar o histórico da pessoa.
+
+A tela mostra:
+
+- **gasto até agora, previsão do modelo e estimativa pelo ritmo**, lado a lado;
+- a **faixa provável** no fechamento: nos testes com pessoas fictícias novas, o valor real ficou dentro dela em 79% das vezes;
+- o **erro típico** do modelo e da estimativa pelo ritmo nesta altura do ciclo, ajustado ao tamanho do seu gasto.
+
+Quando o app não mostra a previsão do modelo:
+
+- **Histórico insuficiente:** a previsão precisa de pelo menos 1 fatura completa anterior. Sem nenhuma, nos testes o modelo errava mais que a estimativa pelo ritmo, e o app avisa e fica só com a estimativa.
+- **Fora do que o modelo viu no treino:** por exemplo, um gasto deste ciclo muito acima das faturas anteriores. O app avisa em vez de extrapolar.
+- **Compras do ciclo encerradas:** não há o que prever.
+
+**Orçamento da fatura inteira:** nas metas, marque "Orçamento da fatura inteira (todas as categorias)". Quando a previsão do modelo passa desse valor, o app alerta. As metas por categoria continuam com a estimativa pelo ritmo, porque o modelo prevê só o total.
+
 ## Experimento de ML (notebook)
 
 `notebooks/classificacao_despesas.ipynb` desenvolve e avalia a classificação com as faturas sintéticas. Se elas faltarem, o notebook as recria com o gerador. Os detalhes:
@@ -125,6 +166,36 @@ A confiança mostrada **não é calibrada** e tende a ser otimista. O app cita o
 - **Dados:** as faturas sintéticas têm um padrão de dia da semana colocado pelo gerador (delivery e lazer mais no fim de semana, estacionamento e transporte em dia útil). Ele serve para testar se o método consegue usar contexto temporal; não diz nada sobre pessoas reais.
 
 Para rodar de novo: abra o notebook na pasta `notebooks/` e execute tudo. Ele usa só dados fictícios.
+
+`notebooks/previsao_gastos.ipynb` desenvolve e avalia a previsão do fechamento com populações de pessoas fictícias geradas na hora: 80 de treino e 40 de teste, com e sem o efeito do salário. Os detalhes:
+
+- **Retratos:** cada ciclo é visto em cada dia, com atributos calculados só com o que se sabia naquele dia. Uma trava confere que apagar o futuro não muda nada. Outra confere que a projeção linear do notebook é a mesma do app.
+- **Validação:** cruzada agrupada por pessoa (nenhuma pessoa no treino e no teste ao mesmo tempo), mais uma avaliação final em 40 pessoas que não participaram de nenhuma escolha. As diferenças têm intervalo de confiança por bootstrap de pessoas.
+- **Bases de comparação:** a projeção linear do app e uma referência simples sem aprendizado ("o gasto até agora mais o que a pessoa costuma gastar depois deste dia do ciclo").
+- **Escolhas com regra declarada:** o histórico mínimo, os dias por ciclo no treino, as folhas da Random Forest e o modelo do app (Random Forest só se for significativamente melhor que a Regressão Linear). O notebook tem travas que falham se as constantes de `src/previsao.py` ficarem diferentes do que ele mede.
+- **Transparência:**
+  - **Experimentos exploratórios:** antes do notebook houve experimentos exploratórios, com as sementes 1 e 2. Os atributos e as regras foram escritos depois deles.
+  - **Semente final:** a avaliação final usa uma população de teste com uma semente nova (6161), não usada em mais nada.
+  - **Sementes descartadas:**
+    - **2027:** veio antes da revisão.
+    - **4242:** revelou que a faixa provável de quem tem 1 fatura anterior estava larga demais. A calibração foi corrigida, conferida só na população de treino, e então a semente foi trocada.
+- **Resultado da execução atual** (40 pessoas de teste com pelo menos 1 fatura anterior, com o efeito do salário):
+  - **MAE geral:** projeção linear R$ 774; Regressão Linear R$ 409; Random Forest R$ 405. Os dois modelos erram significativamente menos que a projeção linear.
+  - **Com poucas faturas:**
+
+    | Faturas anteriores | Random Forest | Projeção linear |
+    |---|---|---|
+    | 1 | R$ 511 | R$ 679 |
+    | 2 | R$ 412 | R$ 798 |
+    | 3 ou mais | R$ 393 | R$ 782 |
+
+    A diferença é significativa em todas as faixas, mas as faixas de 1 e 2 faturas têm só 40 ciclos cada. Com 1 fatura, o intervalo vai de −R$ 303 a −R$ 13.
+  - **Referência simples:** os modelos **não são melhores** que ela (R$ 394). Nesta população, a Random Forest ficou até um pouco pior: R$ 11 a mais, IC [+1; +21]. Numa população anterior, empatou. O ganho vem de usar o histórico da pessoa no mesmo ponto do ciclo, e os modelos aprendem isso sem ir além.
+  - **Efeito do salário:** ele piora a projeção linear (o MAE sobe R$ 86). O erro dos modelos e o da referência simples quase não mudam (de R$ 1 a R$ 14). O ganho maior com o salário vem da projeção linear errar mais, não de o modelo "aprender o salário".
+  - **Sem fatura anterior:** os modelos erram mais que a projeção linear. Por isso o mínimo é 1 fatura.
+  - **Faixa provável:** cobre 79,0% dos casos no total, e entre 77,2% e 81,2% por faixa do ciclo.
+  - **Casos fora do treino:** nenhum dos 14.120 casos de teste.
+- **Limitação principal:** todas as pessoas vêm do mesmo gerador. O erro real, com pessoas reais, pode ser maior.
 
 ## Privacidade
 

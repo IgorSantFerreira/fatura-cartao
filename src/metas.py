@@ -16,7 +16,17 @@ def ordenar_categorias(categorias):
     return [categoria for categoria in CATEGORIAS_META if categoria in categorias]
 
 
+FATURA_INTEIRA = 'Fatura inteira (todas as categorias)'
+
+
+def e_fatura_inteira(categorias):
+    # Meta com todas as categorias = orçamento do gasto total do período (o que a previsão por ML prevê).
+    return list(categorias) == CATEGORIAS_META
+
+
 def nome_meta(categorias):
+    if e_fatura_inteira(categorias):
+        return FATURA_INTEIRA
     return ' + '.join(categorias)
 
 
@@ -80,15 +90,25 @@ def remover_meta(metas, categorias):
     return [dict(meta) for meta in metas if meta['categorias'] != categorias]
 
 
-def situacao(metas, atual_por_categoria, projetado_por_categoria=None, dias_restantes=None):
+RITMO = 'ritmo'
+MODELO = 'modelo'
+
+
+def situacao(metas, atual_por_categoria, projetado_por_categoria=None, dias_restantes=None, previsto_total=None):
     # atual/projetado: {categoria: centavos}. Sem projeção (vencimento desconhecido), só o atual.
+    # previsto_total: gasto total previsto pelo modelo de ML (só o total; None se não há previsão). Vale só para a
+    # meta da fatura inteira; as metas por categoria seguem a projeção pelo ritmo.
     # "Por dia" é arredondado para baixo: seguindo esse valor, a meta não estoura por centavos.
     linhas = []
     for meta in metas:
         atual = sum(int(atual_por_categoria.get(categoria, 0)) for categoria in meta['categorias'])
         projetado = None
+        fonte = RITMO
         if projetado_por_categoria is not None:
             projetado = sum(int(projetado_por_categoria.get(categoria, 0)) for categoria in meta['categorias'])
+        if previsto_total is not None and e_fatura_inteira(meta['categorias']):
+            projetado = int(previsto_total)
+            fonte = MODELO
         restante = meta['centavos'] - atual
         por_dia = None
         if dias_restantes is not None and dias_restantes > 0 and restante > 0:
@@ -106,6 +126,7 @@ def situacao(metas, atual_por_categoria, projetado_por_categoria=None, dias_rest
             , 'atual': atual
             , 'restante': restante
             , 'projetado': projetado
+            , 'fonte': fonte
             , 'por_dia': por_dia
             , 'dias_restantes': dias_restantes
             , 'estado': estado
@@ -122,8 +143,9 @@ def frase_situacao(linha):
     if linha['estado'] == 'estourou':
         return f'**{nome}** já passou da meta de {meta}: {atual} até agora ({ft.reais_md(-linha["restante"])} acima).'
     if linha['estado'] == 'vai estourar':
+        como = 'pela previsão do modelo deve fechar em' if linha.get('fonte') == MODELO else 'no ritmo atual fecha em'
         return (
-            f'**{nome}**: {atual} de {meta} até agora, mas no ritmo atual fecha em {ft.reais_md(linha["projetado"])} '
+            f'**{nome}**: {atual} de {meta} até agora, mas {como} {ft.reais_md(linha["projetado"])} '
             + f'({ft.reais_md(linha["projetado"] - linha["meta"])} acima da meta).'
         )
     return f'**{nome}**: {atual} de {meta} até agora.'

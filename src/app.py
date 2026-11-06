@@ -15,6 +15,7 @@ import fatura as ft
 import historico as hist
 import metas as mt
 import modelo as ml
+import previsao as pv
 import rotulos as rt
 
 
@@ -291,6 +292,44 @@ if len(bases_fixos) == 0:
 fixos = hist.recorrentes(bases_fixos)
 tipos = ft.comportamentos(fatura, set(zip(fixos['chave'], fixos['centavos'])))
 
+
+# ---------------------------------------------------------------- previsão do fechamento por ML
+
+def pessoas_da_previsao():
+    # Tamanho da população fictícia do modelo (treino, calibração). FATURA_PREVISAO_PESSOAS="treino,calibracao"
+    # só existe para os testes do app rodarem rápido; sem ela, vale a configuração medida no notebook.
+    texto = os.environ.get('FATURA_PREVISAO_PESSOAS', '')
+    partes = texto.split(',')
+    if len(partes) == 2 and partes[0].strip().isdigit() and partes[1].strip().isdigit():
+        return int(partes[0]), int(partes[1])
+    return pv.PESSOAS_TREINO_APP, pv.PESSOAS_CALIBRACAO_APP
+
+
+@st.cache_resource(max_entries=1, show_spinner='Preparando a previsão do fechamento (só na primeira vez que o app abre; leva cerca de meio minuto)...')
+def treinar_previsao(pessoas_treino, pessoas_calibracao):
+    # O modelo é treinado com pessoas fictícias, nunca com as faturas de quem usa o app; fica em cache.
+    return pv.treinar_para_app(pessoas_treino=pessoas_treino, pessoas_calibracao=pessoas_calibracao)
+
+
+previsao_ml = None
+erro_previsao = None
+previsao_outra_base = situacao_historico == hist.OUTRA_BASE
+anteriores_previsao = []
+if datas_validas and resultado is not None and not previsao_outra_base:
+    # Só faturas completas que vencem antes desta e que já tinham fechado em "hoje": nada do futuro entra na previsão.
+    for item in montadas:
+        if item['completa'] and item['vencimento'] < vencimento and item['fechamento'] <= hoje:
+            anteriores_previsao.append(pv.curva_da_montada(item))
+    # A previsão é um extra: qualquer falha nela vira um aviso, sem derrubar o resto do app.
+    try:
+        treinado_previsao = treinar_previsao(*pessoas_da_previsao())
+        previsao_ml = pv.prever(treinado_previsao, fatura, datas['inicio'], datas['ultimo_dia'], hoje, anteriores_previsao)
+    except Exception as erro:
+        erro_previsao = f'Não consegui preparar a previsão por aprendizado de máquina: {erro}'
+previsto_ml = None
+if previsao_ml is not None and 'previsto' in previsao_ml:
+    previsto_ml = previsao_ml['previsto']
+
 rotulos_usuario, erro_rotulos = rt.carregar_rotulos(ARQUIVO_ROTULOS)
 if erro_rotulos:
     st.error(
@@ -341,6 +380,7 @@ if resultado is not None:
         , dict(zip(tabela_projecao['categoria'], tabela_projecao['centavos_atual']))
         , dict(zip(tabela_projecao['categoria'], tabela_projecao['centavos_projetado']))
         , resultado['dias_restantes']
+        , previsto_ml
     )
 else:
     situacao_metas = mt.situacao(metas_usuario, gasto_atual)
@@ -506,7 +546,10 @@ with aba_ciclo:
         elif linha['restante'] > 0:
             detalhes.append(f'Faltam {ft.reais_md(linha["restante"])} para a meta. Informe o vencimento para ver quanto dá por dia.')
         if linha['projetado'] is not None and linha['estado'] == 'dentro':
-            detalhes.append(f'No ritmo atual fecha em {ft.reais_md(linha["projetado"])}.')
+            if linha['fonte'] == mt.MODELO:
+                detalhes.append(f'Pela previsão do modelo deve fechar em {ft.reais_md(linha["projetado"])}.')
+            else:
+                detalhes.append(f'No ritmo atual fecha em {ft.reais_md(linha["projetado"])}.')
         if anteriores:
             detalhes.append(
                 f'Sua média nessas categorias: {ft.reais_md(soma_categorias(medias, linha["categorias"]))} '
@@ -518,10 +561,21 @@ with aba_ciclo:
     if not erro_metas:
         with st.expander('Criar, mudar ou remover metas', expanded=len(metas_usuario) == 0):
             with st.form('form_meta'):
+                fatura_inteira = st.checkbox(
+                      'Orçamento da fatura inteira (todas as categorias)'
+                    , key='meta_fatura_inteira'
+                    , help='O gasto total do período. É a meta que usa a previsão por aprendizado de máquina, quando ela está disponível.'
+                )
                 categorias_meta = st.multiselect('Categorias (uma ou mais, somadas)', options=mt.CATEGORIAS_META, key='meta_categorias')
                 valor_meta = st.number_input('Valor máximo na fatura (R$)', min_value=0.0, step=50.0, format='%.2f', key='meta_valor')
                 salvar_meta = st.form_submit_button('Salvar meta')
-            st.caption('Se já existe meta com exatamente as mesmas categorias, o valor dela é trocado.')
+            st.caption(
+                'Se já existe meta com exatamente as mesmas categorias, o valor dela é trocado. Marcando "fatura inteira", '
+                + 'as categorias escolhidas são ignoradas. As metas por categoria usam a projeção pelo ritmo; a previsão por '
+                + 'aprendizado de máquina só prevê o total, então vale só para o orçamento da fatura inteira.'
+            )
+            if salvar_meta and fatura_inteira:
+                categorias_meta = mt.CATEGORIAS_META
             if salvar_meta:
                 try:
                     novas_metas = mt.definir_meta(metas_usuario, categorias_meta, centavos_do_campo(valor_meta))
@@ -581,6 +635,67 @@ with aba_ciclo:
                 , hide_index=True
                 , width='stretch'
             )
+
+            st.subheader('Previsão por aprendizado de máquina')
+            if previsao_outra_base:
+                st.info(
+                    'Esta fatura está guardada na outra base de dados, então a previsão não usa o histórico desta base '
+                    + '(faturas reais e simuladas não se misturam). Troque para a base onde ela está para ver a previsão.'
+                )
+            elif erro_previsao:
+                st.warning(ft.escapar_markdown(erro_previsao))
+            elif previsao_ml is None:
+                st.write(
+                    f'O último dia de compras deste ciclo é {datas["ultimo_dia"]:%d/%m/%Y}: a partir dele não há dias '
+                    + 'pela frente para prever.'
+                )
+            elif not previsao_ml['historico_suficiente']:
+                st.info(
+                    f'Ainda não há histórico suficiente para a previsão por aprendizado de máquina. Ela precisa de pelo menos '
+                    + f'{pv.HISTORICO_MINIMO} fatura(s) completa(s) anterior(es) a esta guardada(s) nesta base, e há '
+                    + f'{previsao_ml["anteriores"]}. Até lá, vale a estimativa pelo ritmo acima.'
+                )
+                if previsao_ml['medido'] is not None:
+                    st.caption(
+                        f'Nos testes com pessoas fictícias, nesta altura do ciclo ({previsao_ml["faixa_ciclo"]}) e sem faturas '
+                        + 'anteriores, a estimativa pelo ritmo errou em média '
+                        + f'{ft.reais_md(int(round(previsao_ml["medido"]["erro_medio_linear"] * previsao_ml["escala"])))} '
+                        + '(na escala do seu gasto).'
+                    )
+            elif previsao_ml['fora_do_treino']:
+                if any(atributo in pv.ATRIBUTOS_DE_VALOR for atributo in previsao_ml['fora_do_treino']):
+                    motivo = (
+                        'O gasto deste ciclo está fora do que o modelo viu nas pessoas fictícias do treino (por exemplo, '
+                        + 'muito acima ou abaixo das suas faturas anteriores).'
+                    )
+                else:
+                    motivo = 'A situação deste ciclo está fora do que o modelo viu nas pessoas fictícias do treino.'
+                st.info(motivo + ' Para não arriscar um número inventado, aqui vale só a estimativa pelo ritmo acima.')
+            else:
+                coluna1, coluna2, coluna3 = st.columns(3)
+                coluna1.metric('Gasto até agora', ft.reais(previsao_ml['atual']))
+                coluna2.metric('Previsto pelo modelo no fechamento', ft.reais(previsao_ml['previsto']))
+                coluna3.metric('Pelo ritmo atual', ft.reais(previsao_ml['linear']))
+                if 'baixo' in previsao_ml:
+                    st.markdown(
+                        f'**Faixa provável no fechamento:** de {ft.reais_md(previsao_ml["baixo"])} a {ft.reais_md(previsao_ml["alto"])}. '
+                        + f'Nos testes com pessoas fictícias novas, o valor real ficou dentro de faixas como esta em {pv.COBERTURA_MEDIDA:.0%} das vezes.'
+                    )
+                    st.caption(
+                        f'Erro típico nesta altura do ciclo ({previsao_ml["faixa_ciclo"]}, com {previsao_ml["anteriores"]} fatura(s) '
+                        + f'anterior(es)): o modelo errou em média {ft.reais_md(previsao_ml["erro_tipico"])}, e a estimativa pelo '
+                        + f'ritmo, {ft.reais_md(previsao_ml["erro_tipico_linear"])} (na escala do seu gasto).'
+                    )
+                st.caption(
+                    f'O modelo ({ft.escapar_markdown(treinado_previsao["tipo"])}) aprendeu com '
+                    + f'{treinado_previsao["pessoas_treino"]} pessoas fictícias, e o erro foi medido em outras '
+                    + f'{treinado_previsao["pessoas_calibracao"]}. Ele não usa as suas faturas para aprender: olha só o '
+                    + f'gasto deste ciclo até {hoje:%d/%m/%Y} e as {previsao_ml["anteriores"]} fatura(s) completa(s) anteriores '
+                    + 'desta base. Pessoas reais podem gastar de um jeito diferente das fictícias, então o erro real pode ser maior. '
+                    + 'Nos testes, o modelo não foi melhor que uma conta simples (o gasto até agora mais o que você costuma '
+                    + 'gastar depois deste dia do ciclo): a vantagem sobre a estimativa pelo ritmo vem de usar o seu histórico. '
+                    + 'O gasto previsto é só o do período (sem saldo anterior e pagamentos).'
+                )
         datas_lancamentos = fatura['data'].dt.date
         fora = fatura[(datas_lancamentos < datas['inicio']) | (datas_lancamentos > datas['ultimo_dia'])]
         if len(fora) > 0:

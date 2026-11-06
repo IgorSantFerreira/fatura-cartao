@@ -214,6 +214,7 @@ def montar(entradas, regras_usuario):
             rotulo = entrada['vencimento'].strftime('%d/%m/%Y')
         montadas.append({
               'vencimento': entrada['vencimento']
+            , 'fechamento': entrada['fechamento']
             , 'rotulo': rotulo
             , 'completa': entrada['completa']
             , 'fatura': ft.montar_fatura(entrada['df'], regras_usuario)
