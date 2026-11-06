@@ -188,7 +188,7 @@ def texto_da_confianca():
     else:
         tendencia = 'a confiança não tende claramente para nenhum lado'
     return (
-        f'No teste do notebook (faturas sintéticas), nos {medida["quantidade"]} estabelecimentos que as regras não '
+        f'Nos testes com faturas fictícias, nos {medida["quantidade"]} estabelecimentos que as regras não '
         + f'reconheciam, o modelo dizia em média {medida["confianca"]:.0%} e acertou {medida["acerto"]:.0%} '
         + f'(contando os {lancamento["quantidade"]} lançamentos deles: {lancamento["confianca"]:.0%} e '
         + f'{lancamento["acerto"]:.0%}): {tendencia}.'

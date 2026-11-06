@@ -128,7 +128,7 @@ A confiança mostrada **não é calibrada** e tende a ser otimista. O app cita o
 
 ## Previsão do fechamento (aba Até o fechamento)
 
-Além da estimativa pelo ritmo ("se continuar gastando assim"), o app prevê o gasto do período no fechamento com uma **Random Forest**. O modelo não aprende com as suas faturas: ele é treinado com 80 pessoas fictícias do gerador, e o erro é medido em outras 40, que ele não viu. O treino acontece na primeira vez que o app abre (cerca de meio minuto) e não grava nenhum arquivo.
+Além da estimativa pelo ritmo ("se continuar gastando assim"), o app prevê o gasto do período no fechamento com uma **Random Forest**. O modelo não aprende com as suas faturas: ele é treinado com 80 pessoas fictícias do gerador, e o erro é medido em outras 40, que ele não viu. O treino acontece na primeira vez que o app abre (cerca de meio minuto). Depois disso, o modelo fica guardado num arquivo em `%LOCALAPPDATA%\fatura_cartao\modelo_previsao\` e as aberturas seguintes são imediatas. Ele é treinado de novo sozinho se o arquivo sumir ou estiver corrompido, ou se mudar o código da previsão, do gerador ou das regras, ou a versão do Python e das bibliotecas. O arquivo tem só o modelo treinado com pessoas fictícias, nenhum dado seu.
 
 Para prever, o modelo olha:
 
@@ -197,6 +197,11 @@ Para rodar de novo: abra o notebook na pasta `notebooks/` e execute tudo. Ele us
   - **Casos fora do treino:** nenhum dos 14.120 casos de teste.
 - **Limitação principal:** todas as pessoas vêm do mesmo gerador. O erro real, com pessoas reais, pode ser maior.
 
+## Demonstração e limitações
+
+- **Apresentar o app só com dados fictícios:** [docs/DEMONSTRACAO.md](docs/DEMONSTRACAO.md). O `abrir_demonstracao.bat` abre o app numa pasta só da demonstração, sem tocar nos dados reais, e prepara a base "Faturas simuladas" com 13 meses de faturas fictícias (`ferramentas/preparar_demonstracao.py`).
+- **O que o app não garante** (dados fictícios, confiança não calibrada, modelo que não ganha de uma conta simples, acessibilidade verificada e não verificada): [docs/LIMITACOES.md](docs/LIMITACOES.md).
+
 ## Privacidade
 
 O app só atende este computador (`localhost`) e a coleta de estatísticas do Streamlit está desligada. O app não envia o CSV para lugar nenhum.
@@ -208,7 +213,7 @@ As faturas guardadas e as metas ficam em `%LOCALAPPDATA%\fatura_cartao\`, uma pa
 
 Os rótulos de "Minhas faturas" ficam em `%LOCALAPPDATA%\fatura_cartao\rotulos.json`.
 
-Para mudar onde ficam os arquivos, use as variáveis de ambiente `FATURA_HISTORICO`, `FATURA_METAS`, `FATURA_REGRAS` e `FATURA_ROTULOS` (base "Minhas faturas") e `FATURA_SIMULADAS` (pasta da base simulada).
+Para mudar onde ficam os arquivos, use as variáveis de ambiente `FATURA_HISTORICO`, `FATURA_METAS`, `FATURA_REGRAS` e `FATURA_ROTULOS` (base "Minhas faturas") e `FATURA_SIMULADAS` (pasta da base simulada). O modelo da previsão fica em `FATURA_MODELO`. Essa pasta deve ser só sua, e não compartilhada nem sincronizada: o arquivo do modelo é lido como código Python (pickle).
 
 ## Testes
 

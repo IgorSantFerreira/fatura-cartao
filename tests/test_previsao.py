@@ -281,3 +281,120 @@ def test_historico_curto_simula_pessoa_com_poucas_faturas_sem_repetir_casos():
     # Com 1 anterior, o histórico é só a fatura imediatamente antes.
     linha = [linha for linha in curtos if linha['ciclo'] == '4 com 1 anterior(es)' and linha['j'] == 10][0]
     assert linha == dict(pv.atributos(curvas[4], 10, [curvas[3]]), pessoa='pessoa_000', ciclo='4 com 1 anterior(es)', total=curvas[4]['total'], alvo_n=linha['alvo_n'])
+
+
+# ---------------------------------------------------------------- modelo guardado no computador (fase 4)
+
+def test_modelo_e_guardado_e_lido_do_arquivo_sem_treinar_de_novo(tmp_path, monkeypatch):
+    pasta = tmp_path / 'modelo'
+    primeiro, origem, aviso = pv.carregar_ou_treinar(pasta, 6, 4)
+    assert origem == 'treino' and aviso is None
+    arquivos = list(pasta.glob('modelo_previsao_*.pkl'))
+    assert len(arquivos) == 1
+
+    def nao_treinar(*args, **kwargs):
+        raise AssertionError('não devia treinar de novo')
+    monkeypatch.setattr(pv, 'treinar_para_app', nao_treinar)
+    segundo, origem, aviso = pv.carregar_ou_treinar(pasta, 6, 4)
+    assert origem == 'arquivo' and aviso is None
+    # O modelo lido dá exatamente a mesma previsão do recém-treinado.
+    fatura = fatura_exemplo()
+    anterior = curva_anterior_parecida()
+    hoje = date(2026, 11, 4)
+    assert pv.prever(primeiro, fatura, INICIO, ULTIMO_DIA, hoje, [anterior]) == pv.prever(segundo, fatura, INICIO, ULTIMO_DIA, hoje, [anterior])
+    assert segundo['quantis'] == primeiro['quantis'] and segundo['limites'] == primeiro['limites']
+
+
+def test_arquivo_corrompido_treina_de_novo_e_substitui(tmp_path):
+    pasta = tmp_path / 'modelo'
+    pv.carregar_ou_treinar(pasta, 6, 4)
+    caminho = list(pasta.glob('modelo_previsao_*.pkl'))[0]
+    caminho.write_bytes(b'nao e um pickle')
+    treinado, origem, aviso = pv.carregar_ou_treinar(pasta, 6, 4)
+    assert origem == 'treino' and aviso is None
+    assert pv.treinado_valido(treinado, 6, 4)
+    assert pv.carregar_ou_treinar(pasta, 6, 4)[1] == 'arquivo'
+
+
+def test_outra_configuracao_usa_outro_arquivo_e_apaga_o_antigo(tmp_path):
+    pasta = tmp_path / 'modelo'
+    pv.carregar_ou_treinar(pasta, 6, 4)
+    antigo = list(pasta.glob('modelo_previsao_*.pkl'))
+    assert pv.impressao_digital(6, 4) != pv.impressao_digital(5, 4)
+    treinado, origem, aviso = pv.carregar_ou_treinar(pasta, 5, 4)
+    assert origem == 'treino' and treinado['pessoas_treino'] == 5
+    novos = list(pasta.glob('modelo_previsao_*.pkl'))
+    assert len(novos) == 1 and novos != antigo
+
+
+def test_impressao_digital_muda_quando_o_gerador_muda(monkeypatch, tmp_path):
+    # Uma cópia idêntica do gerador (mesmo nome) dá a mesma impressão digital; mudar uma linha muda.
+    copia = tmp_path / pv.ARQUIVO_GERADOR.name
+    copia.write_bytes(pv.ARQUIVO_GERADOR.read_bytes())
+    original = pv.impressao_digital(6, 4)
+    monkeypatch.setattr(pv, 'ARQUIVO_GERADOR', copia)
+    assert pv.impressao_digital(6, 4) == original
+    copia.write_bytes(copia.read_bytes() + b'\n# mudou\n')
+    assert pv.impressao_digital(6, 4) != original
+
+
+def test_falha_ao_gravar_nao_impede_a_previsao(tmp_path):
+    # Um arquivo comum no lugar da pasta: não dá para criar a pasta nem gravar.
+    pasta = tmp_path / 'ocupado'
+    pasta.write_text('arquivo, não pasta', encoding='utf-8')
+    treinado, origem, aviso = pv.carregar_ou_treinar(pasta, 6, 4)
+    assert origem == 'treino'
+    assert pv.treinado_valido(treinado, 6, 4)
+    assert 'não consegui guardá-lo' in aviso
+
+
+# ---------------------------------------------------------------- casos-limite
+
+def test_red_team_f4_at1_erro_qualquer_ao_gravar_nao_impede_a_previsao(tmp_path, monkeypatch):
+    import pickle
+    def quebra(*args, **kwargs):
+        raise pickle.PicklingError('falha simulada ao gravar')
+    monkeypatch.setattr(pickle, 'dump', quebra)
+    pasta = tmp_path / 'modelo'
+    treinado, origem, aviso = pv.carregar_ou_treinar(pasta, 6, 4)
+    assert origem == 'treino'
+    assert pv.treinado_valido(treinado, 6, 4)
+    assert aviso is not None and 'não consegui guardá-lo' in aviso
+    assert list(pasta.glob('modelo_previsao_*.pkl')) == []
+    assert list(pasta.glob('*.tmp')) == []
+
+
+def test_red_team_f4_at2_falha_ao_apagar_modelo_antigo_nao_diz_que_nao_guardou(tmp_path):
+    pasta = tmp_path / 'modelo'
+    pasta.mkdir()
+    (pasta / 'modelo_previsao_antigo.pkl').mkdir()  # "modelo antigo" que não pode ser apagado
+    treinado, origem, aviso = pv.carregar_ou_treinar(pasta, 6, 4)
+    assert origem == 'treino'
+    assert (pasta / f'modelo_previsao_{pv.impressao_digital(6, 4)}.pkl').is_file()
+    assert aviso is None or 'não consegui guardá-lo' not in aviso
+    assert pv.carregar_ou_treinar(pasta, 6, 4)[1] == 'arquivo'
+
+
+def test_red_team_f4_at3_temporarios_antigos_nao_se_acumulam(tmp_path):
+    pasta = tmp_path / 'modelo'
+    pasta.mkdir()
+    (pasta / 'modelo_previsao_000000000000000000000000.tmp').write_bytes(b'x' * 1000)
+    pv.carregar_ou_treinar(pasta, 6, 4)
+    assert sorted(p.suffix for p in pasta.iterdir()) == ['.pkl']
+
+
+def test_red_team_f4_at4_impressao_digital_muda_com_a_versao_do_pandas(monkeypatch):
+    original = pv.impressao_digital(6, 4)
+    monkeypatch.setattr(pv.pd, '__version__', '0.0.0-teste')
+    assert pv.impressao_digital(6, 4) != original
+
+
+def test_red_team_f4_at5_arquivo_legivel_mas_incompleto_treina_de_novo(tmp_path):
+    import pickle
+    pasta = tmp_path / 'modelo'
+    treinado, _, _ = pv.carregar_ou_treinar(pasta, 6, 4)
+    caminho = pasta / f'modelo_previsao_{pv.impressao_digital(6, 4)}.pkl'
+    caminho.write_bytes(pickle.dumps(dict(treinado, quantis={}, limites={})))
+    novo, origem, aviso = pv.carregar_ou_treinar(pasta, 6, 4)
+    assert origem == 'treino'
+    assert novo['quantis'] == treinado['quantis'] and novo['limites'] == treinado['limites']

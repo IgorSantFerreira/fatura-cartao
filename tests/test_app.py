@@ -16,7 +16,7 @@ from exemplo import CONTEUDO_EXEMPLO
 
 
 @pytest.fixture
-def regras(tmp_path, monkeypatch):
+def regras(tmp_path, tmp_path_factory, monkeypatch):
     # O app nunca deve tocar no regras_usuario.json, nas metas nem no histórico reais durante os testes.
     caminho = tmp_path / 'regras_usuario.json'
     monkeypatch.setenv('FATURA_REGRAS', str(caminho))
@@ -27,6 +27,9 @@ def regras(tmp_path, monkeypatch):
     monkeypatch.setenv('FATURA_REJEITADAS', str(tmp_path / 'sugestoes_rejeitadas.json'))
     # Previsão por ML com uma população fictícia pequena: os testes do app olham a tela, não a qualidade do modelo.
     monkeypatch.setenv('FATURA_PREVISAO_PESSOAS', '8,6')
+    # O modelo treinado nos testes fica numa pasta temporária da sessão de testes (a mesma para todos os testes, para
+    # não treinar de novo a cada um), nunca na pasta real do app.
+    monkeypatch.setenv('FATURA_MODELO', str(tmp_path_factory.getbasetemp() / 'modelo_previsao'))
     return caminho
 
 
@@ -912,7 +915,8 @@ def test_sugestoes_aparecem_com_confianca_e_explicacao(pasta_historico, regras):
     app = abrir_com_rotulos(regras)
     assert not app.exception
     texto = textos(app)
-    assert 'Modelo: Regressão Logística, treinado com 8 lançamento(s) de 7 estabelecimento(s) que você conferiu nesta base, em 3 categorias.' in texto
+    assert 'O modelo aprendeu com 8 lançamento(s) de 7 estabelecimento(s) que você conferiu nesta base, em 3 categorias.' in texto
+    assert 'Técnica usada: Regressão Logística.' in texto
     nomes = ['Zarpa', 'Conectanet', 'Bandeirante', 'Lucasferreiramota', 'Bom Prato', 'Recanto Verde Parque', r'Mp \*Anapaulasilv', 'Arena Esportes Empreen']
     for nome in nomes:
         sugestao = sugestao_de(app, nome)
@@ -1314,3 +1318,65 @@ def test_red_team_at9_anterior_parcial_nao_conta_como_historico(pasta_historico)
     assert not app.exception
     assert f'{pv.HISTORICO_MINIMO} fatura(s) completa(s) anterior(es) a esta guardada(s) nesta base, e há 0.' in textos(app)
     assert 'Previsto pelo modelo no fechamento' not in metricas(app)
+
+
+# ---------------------------------------------------------------- casos-limite
+
+def test_red_team_f4_atA_fatura_da_demonstracao_aberta_na_base_minhas_nao_e_guardada(pasta_historico):
+    import importlib.util
+    especificacao = importlib.util.spec_from_file_location('preparar_demonstracao', Path(__file__).parent.parent / 'ferramentas' / 'preparar_demonstracao.py')
+    demonstracao = importlib.util.module_from_spec(especificacao)
+    especificacao.loader.exec_module(demonstracao)
+    demonstracao.preparar(pasta_historico.parent / 'simuladas', pasta_historico, False, date(2026, 11, 4))
+    gerador = demonstracao.carregar_gerador()
+    vencimento, linhas = gerador.gerar(13, 2026, date(2025, 10, 25))[-1]
+    assert vencimento == date(2026, 10, 25)
+    app = abrir_com_exemplo(nome='Nubank_2026-10-25.csv', conteudo=demonstracao.texto_csv(gerador, linhas).encode('utf-8'))
+    assert not app.exception
+    assert app.radio(key='base').value == 'Minhas faturas'  # base padrão: o esquecimento do roteiro
+    assert list(pasta_historico.glob('*.json')) == []
+
+
+def test_red_team_f4_atE_textos_sem_jargao_sem_explicacao(pasta_historico, regras):
+    guardar_anterior_parecida(pasta_historico)
+    app = abrir_com_rotulos(regras)
+    assert not app.exception
+    texto = textos(app) + '\n' + '\n'.join(s.value for s in app.subheader)
+    for termo in ['notebook', 'sintétic', 'quantil', ' ML ', '(ML', 'Choose options']:
+        assert termo not in texto, termo
+    for tecnica in ['Random Forest', 'Regressão Logística']:
+        for achado in re.finditer(tecnica, texto):
+            assert texto[max(0, achado.start() - 15):achado.start()] == 'Técnica usada: ', tecnica
+
+
+def test_red_team_f4_atF_caixas_conferido_dizem_de_qual_estabelecimento_sao(pasta_historico, regras):
+    app = abrir_com_exemplo()
+    assert not app.exception
+    caixas = [caixa for caixa in app.checkbox if caixa.key and caixa.key.startswith('conferir_ok_')]
+    assert len(caixas) >= 2
+    rotulos = [caixa.label for caixa in caixas]
+    assert len(set(rotulos)) == len(rotulos)
+
+
+def test_red_team_f4_atG_sem_fatura_modelo_o_modelo_vai_para_a_pasta_local_do_app(pasta_historico, monkeypatch, tmp_path):
+    falso = tmp_path / 'localappdata'
+    monkeypatch.setenv('LOCALAPPDATA', str(falso))
+    monkeypatch.delenv('FATURA_MODELO')
+    monkeypatch.setenv('FATURA_PREVISAO_PESSOAS', '4,3')
+    guardar_anterior_parecida(pasta_historico)
+    app = abrir_com_exemplo()
+    assert not app.exception
+    assert 'Não consegui preparar a previsão' not in textos(app)
+    assert len(list((falso / 'fatura_cartao' / 'modelo_previsao').glob('modelo_previsao_*.pkl'))) == 1
+
+
+def test_red_team_f4_atH_testes_do_app_nao_criam_nada_na_pasta_local(pasta_historico, monkeypatch, tmp_path):
+    import os
+    falso = tmp_path / 'localappdata'
+    monkeypatch.setenv('LOCALAPPDATA', str(falso))
+    monkeypatch.setenv('FATURA_PREVISAO_PESSOAS', '4,2')
+    guardar_anterior_parecida(pasta_historico)
+    app = abrir_com_exemplo()
+    assert not app.exception
+    assert not falso.exists()
+    assert (Path(os.environ['FATURA_MODELO']) / f'modelo_previsao_{pv.impressao_digital(4, 2)}.pkl').is_file()

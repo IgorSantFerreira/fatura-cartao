@@ -96,8 +96,9 @@ def grafico_barras(resumo, coluna):
 
 
 def grafico_colunas(rotulos, centavos, apagadas=None):
-    # Uma série no tempo (faturas): colunas na cor única; "apagadas" (faturas parciais) ficam claras
-    # e o rótulo do eixo já diz "(parcial)", então a diferença não depende só da cor.
+    # Uma série no tempo (faturas): colunas na cor única; "apagadas" (faturas parciais) ficam vazadas, com contorno
+    # na cor cheia (o contorno mantém o contraste de 4,4:1 com o fundo; uma cor clara sozinha ficaria abaixo de 3:1).
+    # O rótulo do eixo já diz "(parcial)", então a diferença não depende só da cor.
     if apagadas is None:
         apagadas = [False] * len(rotulos)
     textos = [ft.reais(valor) for valor in centavos]
@@ -108,8 +109,9 @@ def grafico_colunas(rotulos, centavos, apagadas=None):
         , customdata=textos
         , textposition='outside'
         , cliponaxis=False
-        , marker_color=COR_BARRA
-        , marker_opacity=[0.4 if apagada else 1.0 for apagada in apagadas]
+        , marker_color=['rgba(0,0,0,0)' if apagada else COR_BARRA for apagada in apagadas]
+        , marker_line_color=COR_BARRA
+        , marker_line_width=2
         , hovertemplate='%{x}: %{customdata}<extra></extra>'
     ))
     figura.update_layout(
@@ -134,6 +136,31 @@ def soma_categorias(valores, categorias):
 
 
 st.set_page_config(page_title='Raio-X da fatura', page_icon='💳', layout='wide')
+# Contraste (WCAG 2.1, 4,5:1 para texto), medido com axe-core no tema claro do navegador:
+# - legendas: o Streamlit as clareia com opacidade 0,6 (3,7:1 sobre branco); com 0,8 passam nos dois temas;
+# - variação das métricas ("vs. média") e tamanho do arquivo enviado: herdam a cor normal do texto (o sinal, a seta
+#   e o fundo colorido da variação continuam dizendo se subiu ou desceu).
+# As regras usam a cor do próprio tema (sem cor fixa), então valem no tema claro e no escuro.
+# Foco do teclado (WCAG 2.1, 3:1 para o indicador): o contorno padrão do Streamlit fica em torno de 1,7:1. Um
+# contorno de 2 px na cor das barras (#2a78d6: 4,4:1 sobre branco e 4,3:1 sobre o fundo escuro) passa nos dois temas.
+# Caixas de seleção e opções escondem o campo de verdade: o contorno vai no rótulo inteiro.
+st.markdown(
+      '<style>'
+    + f':focus-visible {{ outline: 2px solid {COR_BARRA} !important; outline-offset: 2px !important; }}'
+    + f'label:has(input:focus-visible) {{ outline: 2px solid {COR_BARRA} !important; outline-offset: 2px !important; }}'
+    # Tabelas: a barra de botões (colunas, baixar, buscar, tela cheia) só aparece com o mouse; com o foco do teclado
+    # num botão dela, ela fica visível. A grade desenha o contorno para dentro (a borda da tabela cortaria o de fora).
+    + '[data-testid="stElementToolbar"]:focus-within { opacity: 1 !important; }'
+    # Aba selecionada: o título vermelho do Streamlit fica em 3,3:1 sobre branco; com a cor normal do texto, em
+    # negrito, passa nos dois temas (o sublinhado vermelho continua mostrando qual aba está aberta).
+    + '[role="tab"][aria-selected="true"], [role="tab"][aria-selected="true"] p { color: inherit !important; font-weight: 600; }'
+    + 'canvas:focus-visible { outline-offset: -2px !important; }'
+    + '[data-testid="stCaptionContainer"] { opacity: 0.8; }'
+    + '[data-testid="stMetricDelta"], [data-testid="stMetricDelta"] * { color: unset; }'
+    + '[data-testid="stFileChip"], [data-testid="stFileChip"] * { color: unset; }'
+    + '</style>'
+    , unsafe_allow_html=True
+)
 st.title('Raio-X da fatura do cartão')
 st.caption('O arquivo é lido aqui no seu computador e não é enviado para lugar nenhum.')
 
@@ -305,14 +332,20 @@ def pessoas_da_previsao():
     return pv.PESSOAS_TREINO_APP, pv.PESSOAS_CALIBRACAO_APP
 
 
-@st.cache_resource(max_entries=1, show_spinner='Preparando a previsão do fechamento (só na primeira vez que o app abre; leva cerca de meio minuto)...')
-def treinar_previsao(pessoas_treino, pessoas_calibracao):
-    # O modelo é treinado com pessoas fictícias, nunca com as faturas de quem usa o app; fica em cache.
-    return pv.treinar_para_app(pessoas_treino=pessoas_treino, pessoas_calibracao=pessoas_calibracao)
+# O modelo treinado fica guardado nesta pasta local (fora do OneDrive e do git); FATURA_MODELO muda o lugar.
+PASTA_MODELO = os.environ.get('FATURA_MODELO', str(PASTA_DADOS / 'modelo_previsao'))
+
+
+@st.cache_resource(max_entries=1, show_spinner='Preparando a previsão do fechamento. Na primeira vez leva cerca de meio minuto; depois ela fica guardada no computador...')
+def treinar_previsao(pasta, pessoas_treino, pessoas_calibracao):
+    # O modelo é treinado com pessoas fictícias, nunca com as faturas de quem usa o app. Fica guardado num arquivo
+    # local (as próximas aberturas só leem o arquivo) e, enquanto o app está aberto, na memória.
+    return pv.carregar_ou_treinar(pasta, pessoas_treino, pessoas_calibracao)
 
 
 previsao_ml = None
 erro_previsao = None
+aviso_modelo = None
 previsao_outra_base = situacao_historico == hist.OUTRA_BASE
 anteriores_previsao = []
 if datas_validas and resultado is not None and not previsao_outra_base:
@@ -322,7 +355,7 @@ if datas_validas and resultado is not None and not previsao_outra_base:
             anteriores_previsao.append(pv.curva_da_montada(item))
     # A previsão é um extra: qualquer falha nela vira um aviso, sem derrubar o resto do app.
     try:
-        treinado_previsao = treinar_previsao(*pessoas_da_previsao())
+        treinado_previsao, origem_modelo, aviso_modelo = treinar_previsao(PASTA_MODELO, *pessoas_da_previsao())
         previsao_ml = pv.prever(treinado_previsao, fatura, datas['inicio'], datas['ultimo_dia'], hoje, anteriores_previsao)
     except Exception as erro:
         erro_previsao = f'Não consegui preparar a previsão por aprendizado de máquina: {erro}'
@@ -566,7 +599,7 @@ with aba_ciclo:
                     , key='meta_fatura_inteira'
                     , help='O gasto total do período. É a meta que usa a previsão por aprendizado de máquina, quando ela está disponível.'
                 )
-                categorias_meta = st.multiselect('Categorias (uma ou mais, somadas)', options=mt.CATEGORIAS_META, key='meta_categorias')
+                categorias_meta = st.multiselect('Categorias (uma ou mais, somadas)', options=mt.CATEGORIAS_META, key='meta_categorias', placeholder='Escolha uma ou mais categorias')
                 valor_meta = st.number_input('Valor máximo na fatura (R$)', min_value=0.0, step=50.0, format='%.2f', key='meta_valor')
                 salvar_meta = st.form_submit_button('Salvar meta')
             st.caption(
@@ -637,6 +670,8 @@ with aba_ciclo:
             )
 
             st.subheader('Previsão por aprendizado de máquina')
+            if aviso_modelo:
+                st.caption(ft.escapar_markdown(aviso_modelo))
             if previsao_outra_base:
                 st.info(
                     'Esta fatura está guardada na outra base de dados, então a previsão não usa o histórico desta base '
@@ -660,7 +695,7 @@ with aba_ciclo:
                         f'Nos testes com pessoas fictícias, nesta altura do ciclo ({previsao_ml["faixa_ciclo"]}) e sem faturas '
                         + 'anteriores, a estimativa pelo ritmo errou em média '
                         + f'{ft.reais_md(int(round(previsao_ml["medido"]["erro_medio_linear"] * previsao_ml["escala"])))} '
-                        + '(na escala do seu gasto).'
+                        + '(valor ajustado ao tamanho do seu gasto).'
                     )
             elif previsao_ml['fora_do_treino']:
                 if any(atributo in pv.ATRIBUTOS_DE_VALOR for atributo in previsao_ml['fora_do_treino']):
@@ -672,6 +707,10 @@ with aba_ciclo:
                     motivo = 'A situação deste ciclo está fora do que o modelo viu nas pessoas fictícias do treino.'
                 st.info(motivo + ' Para não arriscar um número inventado, aqui vale só a estimativa pelo ritmo acima.')
             else:
+                st.markdown(
+                    'A previsão vem de um programa que aprendeu, com as faturas de muitas pessoas fictícias, como o gasto '
+                    + 'costuma se espalhar pelo mês. Ele usa o seu histórico para estimar quanto ainda vem até o fechamento.'
+                )
                 coluna1, coluna2, coluna3 = st.columns(3)
                 coluna1.metric('Gasto até agora', ft.reais(previsao_ml['atual']))
                 coluna2.metric('Previsto pelo modelo no fechamento', ft.reais(previsao_ml['previsto']))
@@ -679,22 +718,25 @@ with aba_ciclo:
                 if 'baixo' in previsao_ml:
                     st.markdown(
                         f'**Faixa provável no fechamento:** de {ft.reais_md(previsao_ml["baixo"])} a {ft.reais_md(previsao_ml["alto"])}. '
-                        + f'Nos testes com pessoas fictícias novas, o valor real ficou dentro de faixas como esta em {pv.COBERTURA_MEDIDA:.0%} das vezes.'
+                        + 'A previsão não é exata: nos testes com pessoas fictícias novas, o valor real ficou dentro de faixas '
+                        + f'como esta em {pv.COBERTURA_MEDIDA:.0%} das vezes (cerca de {round(pv.COBERTURA_MEDIDA * 10)} em cada 10).'
                     )
                     st.caption(
-                        f'Erro típico nesta altura do ciclo ({previsao_ml["faixa_ciclo"]}, com {previsao_ml["anteriores"]} fatura(s) '
-                        + f'anterior(es)): o modelo errou em média {ft.reais_md(previsao_ml["erro_tipico"])}, e a estimativa pelo '
-                        + f'ritmo, {ft.reais_md(previsao_ml["erro_tipico_linear"])} (na escala do seu gasto).'
+                        f'Quanto costuma errar nesta altura do ciclo ({previsao_ml["faixa_ciclo"]}, com {previsao_ml["anteriores"]} '
+                        + f'fatura(s) anterior(es)): o modelo errou em média {ft.reais_md(previsao_ml["erro_tipico"])}, e a '
+                        + f'estimativa pelo ritmo, {ft.reais_md(previsao_ml["erro_tipico_linear"])} (valores ajustados ao tamanho '
+                        + 'do seu gasto).'
                     )
                 st.caption(
-                    f'O modelo ({ft.escapar_markdown(treinado_previsao["tipo"])}) aprendeu com '
+                    'O modelo aprendeu com '
                     + f'{treinado_previsao["pessoas_treino"]} pessoas fictícias, e o erro foi medido em outras '
                     + f'{treinado_previsao["pessoas_calibracao"]}. Ele não usa as suas faturas para aprender: olha só o '
                     + f'gasto deste ciclo até {hoje:%d/%m/%Y} e as {previsao_ml["anteriores"]} fatura(s) completa(s) anteriores '
                     + 'desta base. Pessoas reais podem gastar de um jeito diferente das fictícias, então o erro real pode ser maior. '
                     + 'Nos testes, o modelo não foi melhor que uma conta simples (o gasto até agora mais o que você costuma '
                     + 'gastar depois deste dia do ciclo): a vantagem sobre a estimativa pelo ritmo vem de usar o seu histórico. '
-                    + 'O gasto previsto é só o do período (sem saldo anterior e pagamentos).'
+                    + 'O gasto previsto é só o do período (sem saldo anterior e pagamentos). '
+                    + f'Técnica usada: {ft.escapar_markdown(treinado_previsao["tipo"])}.'
                 )
         datas_lancamentos = fatura['data'].dt.date
         fora = fatura[(datas_lancamentos < datas['inicio']) | (datas_lancamentos > datas['ultimo_dia'])]
@@ -1043,10 +1085,12 @@ with aba_classificar:
                 else:
                     visiveis.append(item)
             st.caption(
-                f'Modelo: {ml.TIPO_APP}, treinado com {len(conjunto)} lançamento(s) de {conjunto["chave"].nunique()} '
+                f'O modelo aprendeu com {len(conjunto)} lançamento(s) de {conjunto["chave"].nunique()} '
                 + f'estabelecimento(s) que você conferiu nesta base, em {categorias_rotuladas} categorias. '
-                + 'Confiança: a probabilidade que o modelo dá à categoria sugerida, sem calibração. '
-                + ml.texto_da_confianca() + ' Nada muda de categoria sem você aceitar.'
+                + 'Confiança: o quanto o modelo acha que a sugestão está certa. Esse número não é exato (não foi ajustado '
+                + 'para bater com o acerto real). '
+                + ml.texto_da_confianca() + ' Nada muda de categoria sem você aceitar. '
+                + f'Técnica usada: {ml.TIPO_APP}.'
             )
             if escondidas > 0:
                 st.caption(f'{escondidas} sugestão(ões) que você rejeitou não aparecem mais.')
@@ -1080,8 +1124,9 @@ with aba_classificar:
                             , key=f'sugestao_acao_{item.chave}_{rodada}'
                         )
                         # Começa na categoria sugerida: "Corrigir" sem mexer aqui vale como aceitar, nunca grava a 1ª da lista.
+                        # O nome do estabelecimento no rótulo: com leitor de tela, cada campo diz de qual estabelecimento é.
                         coluna_categoria.selectbox(
-                              'Se for corrigir, a categoria certa'
+                              f'Se for corrigir, a categoria certa de {ft.escapar_markdown(nomes_a_sugerir[item.chave])}'
                             , rt.CATEGORIAS_ROTULO
                             , index=rt.CATEGORIAS_ROTULO.index(item.categoria) if item.categoria in rt.CATEGORIAS_ROTULO else 0
                             , key=f'sugestao_categoria_{item.chave}_{rodada}'
@@ -1166,7 +1211,7 @@ with aba_classificar:
                     st.session_state['mensagem'] = f'{mudou} estabelecimento(s) classificado(s).'
                     st.rerun()
 
-        st.subheader('Conferir categorias (rótulos para o ML)')
+        st.subheader('Conferir categorias (para o modelo aprender)')
         if erro_rotulos:
             st.error('Corrija ou apague o arquivo de rótulos para poder conferir: ' + ft.escapar_markdown(ARQUIVO_ROTULOS))
         else:
@@ -1202,7 +1247,7 @@ with aba_classificar:
             with st.expander('Conferir estabelecimentos desta fatura', expanded=bool((~itens_conferir['conferido']).any())):
                 with st.form('form_conferir'):
                     for item in itens_conferir.itertuples(index=False):
-                        coluna_nome, coluna_categoria, coluna_ok = st.columns([4, 3, 1])
+                        coluna_nome, coluna_categoria, coluna_ok = st.columns([4, 3, 2])
                         coluna_nome.markdown(
                             f'**{ft.escapar_markdown(item.estabelecimento)}**  \n'
                             + f'{ft.reais_md(item.centavos)} em {item.lancamentos} lançamento(s); hoje: {ft.escapar_markdown(item.categoria_atual)}'
@@ -1215,7 +1260,8 @@ with aba_classificar:
                             , key='conferir_categoria_' + item.chave
                             , label_visibility='collapsed'
                         )
-                        coluna_ok.checkbox('Conferido', key='conferir_ok_' + item.chave)
+                        # O nome no rótulo: com leitor de tela, cada caixa diz de qual estabelecimento é.
+                        coluna_ok.checkbox(f'Conferido: {ft.escapar_markdown(item.estabelecimento)}', key='conferir_ok_' + item.chave)
                     salvar_conferencia = st.form_submit_button('Salvar conferência')
                 if salvar_conferencia:
                     escolhas = {}
@@ -1299,8 +1345,8 @@ with aba_classificar:
 # ---------------------------------------------------------------- aba: lançamentos
 
 with aba_lancamentos:
-    filtro = st.multiselect('Filtrar categorias', options=ft.CATEGORIAS, key='filtro_categorias')
-    filtro_tipo = st.multiselect('Filtrar tipo de gasto', options=ft.COMPORTAMENTOS, key='filtro_tipos')
+    filtro = st.multiselect('Filtrar categorias', options=ft.CATEGORIAS, key='filtro_categorias', placeholder='Todas as categorias')
+    filtro_tipo = st.multiselect('Filtrar tipo de gasto', options=ft.COMPORTAMENTOS, key='filtro_tipos', placeholder='Todos os tipos')
     selecao = pd.Series(True, index=fatura.index)
     if filtro:
         selecao = selecao & fatura['categoria'].isin(filtro)

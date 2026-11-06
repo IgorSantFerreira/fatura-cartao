@@ -383,6 +383,99 @@ def treinar_para_app(semente=SEMENTE_APP, pessoas_treino=PESSOAS_TREINO_APP, pes
     }
 
 
+# ---------------------------------------------------------------- modelo guardado no computador
+# Treinar leva cerca de meio minuto. Depois do primeiro treino, o modelo fica num arquivo da pasta local do app e
+# as próximas aberturas só leem o arquivo. O nome do arquivo leva uma impressão digital de tudo que define o
+# modelo: o código da previsão, das regras de categoria (fatura.py) e do gerador, a configuração e as versões do
+# Python, do numpy e do scikit-learn. Se algo mudar, o arquivo antigo não serve e o modelo é treinado de novo.
+#
+# O arquivo é um pickle: só deve ser lido de uma pasta do próprio usuário (quem consegue escrever nela já
+# consegue rodar programas como esse usuário). Arquivo corrompido ou ilegível: treina de novo.
+
+PREFIXO_ARQUIVO_MODELO = 'modelo_previsao_'
+
+
+def impressao_digital(pessoas_treino, pessoas_calibracao, semente=SEMENTE_APP):
+    import hashlib
+    import platform
+    import sklearn
+    resumo = hashlib.sha256()
+    for arquivo in [Path(__file__), Path(ft.__file__), ARQUIVO_GERADOR]:
+        resumo.update(arquivo.name.encode('utf-8'))
+        resumo.update(arquivo.read_bytes().replace(b'\r\n', b'\n'))
+    configuracao = [
+          semente, pessoas_treino, pessoas_calibracao, TIPO_APP, FOLHAS_APP, PASSO_DIAS_APP, HISTORICO_MINIMO
+        , platform.python_version(), np.__version__, pd.__version__, sklearn.__version__
+    ]
+    resumo.update(repr(configuracao).encode('utf-8'))
+    return resumo.hexdigest()[:24]
+
+
+def treinado_valido(treinado, pessoas_treino, pessoas_calibracao):
+    if not isinstance(treinado, dict):
+        return False
+    for chave in ['modelo', 'limites', 'tipo', 'quantis', 'pessoas_treino', 'pessoas_calibracao']:
+        if chave not in treinado:
+            return False
+    # Um arquivo legível mas incompleto (sem os quantis ou os limites) faria a previsão falhar sempre: treina de novo.
+    quantis = treinado['quantis']
+    limites = treinado['limites']
+    return (
+          treinado['tipo'] == TIPO_APP
+        and treinado['pessoas_treino'] == pessoas_treino
+        and treinado['pessoas_calibracao'] == pessoas_calibracao
+        and hasattr(treinado['modelo'], 'predict')
+        and isinstance(quantis, dict) and len(quantis) > 0
+        and isinstance(limites, dict) and all(atributo in limites for atributo in ATRIBUTOS)
+    )
+
+
+def carregar_ou_treinar(pasta, pessoas_treino=PESSOAS_TREINO_APP, pessoas_calibracao=PESSOAS_CALIBRACAO_APP):
+    # Devolve (treinado, origem, aviso). origem: 'arquivo' (lido) ou 'treino' (treinado agora).
+    # aviso: texto se o modelo não pôde ser gravado (a previsão continua, só não fica guardada).
+    import pickle
+    pasta = Path(pasta)
+    caminho = pasta / f'{PREFIXO_ARQUIVO_MODELO}{impressao_digital(pessoas_treino, pessoas_calibracao)}.pkl'
+    if caminho.exists():
+        try:
+            with open(caminho, 'rb') as arquivo:
+                treinado = pickle.load(arquivo)
+            if treinado_valido(treinado, pessoas_treino, pessoas_calibracao):
+                return treinado, 'arquivo', None
+        except Exception:
+            pass
+    import os
+    import tempfile
+    treinado = treinar_para_app(pessoas_treino=pessoas_treino, pessoas_calibracao=pessoas_calibracao)
+    temporario = None
+    try:
+        pasta.mkdir(parents=True, exist_ok=True)
+        # Nome único: dois processos treinando ao mesmo tempo não escrevem no mesmo temporário.
+        descritor, nome_temporario = tempfile.mkstemp(prefix=PREFIXO_ARQUIVO_MODELO, suffix='.tmp', dir=pasta)
+        temporario = Path(nome_temporario)
+        with os.fdopen(descritor, 'wb') as arquivo:
+            pickle.dump(treinado, arquivo)
+        temporario.replace(caminho)
+        temporario = None
+    except Exception:
+        # Qualquer falha ao gravar (pasta, disco, pickle): a previsão continua com o modelo em memória.
+        if temporario is not None:
+            try:
+                temporario.unlink()
+            except OSError:
+                pass
+        return treinado, 'treino', 'O modelo foi treinado, mas não consegui guardá-lo no computador; na próxima abertura ele será treinado de novo.'
+    # Limpeza: modelos de versões anteriores e temporários que sobraram. Se algo não puder ser apagado, o modelo novo
+    # já está guardado: não há o que avisar.
+    for antigo in list(pasta.glob(f'{PREFIXO_ARQUIVO_MODELO}*.pkl')) + list(pasta.glob(f'{PREFIXO_ARQUIVO_MODELO}*.tmp')):
+        if antigo != caminho:
+            try:
+                antigo.unlink()
+            except OSError:
+                pass
+    return treinado, 'treino', None
+
+
 def prever(treinado, fatura, inicio, ultimo_dia, hoje, anteriores):
     # Previsão para o app. anteriores: curvas das faturas completas que vencem antes da atual (mais antiga
     # primeiro). Devolve None se não há o que prever (data antes do início ou compras já encerradas).
