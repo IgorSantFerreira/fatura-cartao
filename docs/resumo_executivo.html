@@ -37,7 +37,7 @@
   table { width: 100%; border-collapse: collapse; font-size: 9.2pt; margin: 6px 0 8px 0; }
   th { text-align: left; background: var(--azul-claro); color: var(--texto); padding: 6px; border-bottom: 1px solid var(--linha); }
   td { padding: 6px; border-bottom: 1px solid var(--linha); vertical-align: top; }
-  .ods { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .ods { display: grid; grid-template-columns: 1fr; gap: 8px; }
   .ods .cartao h3 { margin-top: 0; color: var(--azul); }
   .pequeno { font-size: 8.5pt; color: var(--cinza); }
   .fontes { font-size: 8pt; color: var(--cinza); }
@@ -55,17 +55,17 @@
 <h1>Fatura Inteligente do Cidadão</h1>
 <p class="subtitulo">Raio-X da fatura do cartão: entender para onde vai o dinheiro e saber, no meio do mês, quanto a fatura vai fechar.</p>
 
-<div class="faixa"><strong>Em uma frase:</strong> um aplicativo gratuito, que roda no computador da pessoa, lê a fatura do cartão e mostra, em português simples, onde o dinheiro foi, o que ainda vai cair e se o mês vai fechar acima do orçamento, com previsão por aprendizado de máquina e sem que nenhum dado saia do computador.</div>
+<div class="faixa"><strong>Em uma frase:</strong> um aplicativo gratuito, que roda no computador da pessoa, lê a fatura do cartão e mostra, em português simples, onde o dinheiro foi, o que ainda vai cair e se o mês vai fechar acima do orçamento, com previsão por aprendizado de máquina. Tudo é processado no computador da pessoa, sem servidor externo.</div>
 
 <h2>O problema no Brasil</h2>
 <div class="numeros evita-quebra">
-  <div class="numero"><div class="valor">82%</div><div class="rotulo">das famílias endividadas; <strong>85,3%</strong> delas com dívida no cartão</div><div class="fonte">CNC/Peic, jul/2026</div></div>
+  <div class="numero"><div class="valor">82%</div><div class="rotulo">das famílias têm alguma dívida, inclusive parcela em dia; <strong>85,3%</strong> delas, no cartão</div><div class="fonte">CNC/Peic, jul/2026</div></div>
   <div class="numero"><div class="valor">84,2 mi</div><div class="rotulo">de brasileiros inadimplentes, <strong>51,1%</strong> dos adultos</div><div class="fonte">Serasa Experian, set/2026</div></div>
   <div class="numero"><div class="valor alerta">451,7%</div><div class="rotulo">ao ano: juro médio do rotativo do cartão</div><div class="fonte">Banco Central, set/2026</div></div>
   <div class="numero"><div class="valor">58%</div><div class="rotulo">dos usuários de cartão não controlam os gastos; <strong>78%</strong> não sabem o juro do rotativo</div><div class="fonte">CNDL/SPC Brasil, jan/2026</div></div>
 </div>
-<p>O cartão é, ao mesmo tempo, o meio de pagamento do dia a dia e a principal porta de entrada para a dívida cara. <strong>29,8% das famílias</strong> estavam com contas em atraso em julho de 2026, e <strong>30%</strong> dos usuários de cartão foram negativados por causa dele no último ano. A lei limita o total de juros e encargos do rotativo ao valor original da dívida (Lei 14.690/2023), o que, na prática, ainda deixa uma dívida de R$ 1.000 virar R$ 2.000. No letramento financeiro, os adultos brasileiros tiraram nota média de <strong>59,6 em 100</strong> (Banco Central e FGC, metodologia OCDE, 2023).</p>
-<p><strong>O nó do problema é a falta de visibilidade, e não só a falta de dinheiro.</strong> A fatura chega como uma lista de nomes pouco claros ("Pag*", "Mp *", "Ec *") e um total. Ela não diz para onde o dinheiro foi, o que é fixo, o que ainda vai cair, nem se o mês vai fechar acima do que a pessoa consegue pagar. Quando a pessoa percebe, a fatura já fechou.</p>
+<p>O cartão é o meio de pagamento do dia a dia e a dívida mais citada pelas famílias endividadas. Endividamento (ter alguma dívida, mesmo em dia) e inadimplência (ter conta em atraso) medem coisas diferentes: <strong>29,8% das famílias</strong> estavam com contas em atraso em julho de 2026, e <strong>30%</strong> dos usuários de cartão foram negativados por causa dele no último ano. A lei limita o total de juros e encargos do rotativo ao valor original da dívida (Lei 14.690/2023), o que, na prática, ainda deixa uma dívida de R$ 1.000 virar R$ 2.000. No letramento financeiro, os adultos brasileiros tiraram nota média de <strong>59,6 em 100</strong> (Banco Central e FGC, metodologia OCDE, 2023).</p>
+<p><strong>O que o projeto ataca é a falta de visibilidade e de previsibilidade.</strong> Ele não afirma que a falta de controle causa o endividamento: renda, preços, emprego e acesso a crédito também pesam, e as pesquisas não medem essa causalidade. A fatura chega como uma lista de nomes pouco claros ("Pag*", "Mp *", "Ec *") e um total. Ela não diz para onde o dinheiro foi, o que é fixo, o que ainda vai cair, nem se o mês vai fechar acima do que a pessoa consegue pagar. Sem uma estimativa do fechamento, passar do orçamento pode ficar visível só quando a fatura fecha.</p>
 
 <section class="evita-quebra"><h2>A solução</h2>
 <div class="duas">
@@ -81,7 +81,7 @@
   <div class="cartao evita-quebra">
     <h3>Por que é diferente</h3>
     <ul>
-      <li><strong>Privacidade:</strong> os dados não saem do computador. O app não pede CPF, renda nem senha de banco; usa o CSV que o próprio banco já oferece.</li>
+      <li><strong>Privacidade:</strong> processamento local, sem envio a servidor. O app não pede CPF, renda nem senha de banco; usa o CSV que o próprio banco já oferece. Se a pessoa guardar o CSV numa pasta sincronizada com a nuvem, o arquivo segue essa configuração.</li>
       <li><strong>Feito para leigos:</strong> português simples, navegável pelo teclado, contraste verificado nos temas claro e escuro.</li>
       <li><strong>Funciona com pouco histórico:</strong> com 1 fatura anterior já há previsão. O modelo aprendeu com muitas pessoas fictícias e não com os dados de quem usa.</li>
       <li><strong>Honesto sobre os limites:</strong> mostra o erro típico e avisa quando não há histórico suficiente.</li>
@@ -97,10 +97,10 @@
     <div class="nome">Lucas, 28 anos</div>
     <div>Analista administrativo em São Paulo<br>Renda de cerca de R$ 4.500, salário no 5º dia útil<br>Persona fictícia</div>
     <p class="citacao">"Eu ganho razoavelmente, mas no fim do mês não sei para onde foi o dinheiro."</p>
-    <p class="pequeno">Representa o público que mais aparece nas pesquisas: adulto, trabalhador, que usa o cartão para quase tudo e não faz controle ativo dos gastos.</p>
+    <p class="pequeno"><strong>Baseado em dados de pesquisa</strong> (estatísticas de grupo, não fatos sobre ele): o perfil que ele representa, adulto que trabalha, usa o cartão no dia a dia, não faz controle ativo dos gastos e não sabe o juro do rotativo. <strong>Ilustrativo:</strong> a renda, a rotina e as dores ao lado, que dão rosto ao problema sem medição.</p>
   </div>
   <div>
-    <h3>Rotina e dores</h3>
+    <h3>Rotina e dores (ilustrativas)</h3>
     <ul>
       <li>Usa o cartão para delivery, aplicativo de transporte, combustível, mercado e quatro assinaturas.</li>
       <li>A fatura "sempre vem mais alta do que eu imaginava".</li>
@@ -118,25 +118,24 @@
 </div>
 
 </section>
-<h2>Stakeholders</h2>
+<section class="evita-quebra"><h2>Público beneficiado e ecossistema</h2>
+<p class="pequeno">Organizado pela relação de cada um com o produto. Nenhuma parceria institucional foi formalizada: os papéis descrevem quem poderia participar.</p>
 <table class="evita-quebra">
-  <tr><th style="width:26%">Parte interessada</th><th style="width:37%">O que ganha</th><th>O que precisa ver no projeto</th></tr>
-  <tr><td><strong>Cidadão usuário</strong> (como o Lucas)</td><td>Entender e prever os gastos; evitar rotativo e atraso</td><td>Linguagem simples, privacidade, controle sobre as categorias</td></tr>
-  <tr><td><strong>Família e dependentes</strong></td><td>Orçamento doméstico mais previsível</td><td>Alertas claros, sem jargão</td></tr>
-  <tr><td><strong>Educadores financeiros, escolas e faculdades</strong></td><td>Ferramenta concreta para ensinar com a fatura real</td><td>Explicações e limitações transparentes</td></tr>
-  <tr><td><strong>Defesa do consumidor</strong> (Procons, Idec)</td><td>Consumidores mais informados sobre juros e parcelas</td><td>Nenhum conflito de interesse: o app não oferece crédito</td></tr>
-  <tr><td><strong>Banco Central e governo</strong> (cidadania financeira, Desenrola)</td><td>Menos inadimplência, mais letramento financeiro</td><td>Alinhamento com a educação financeira, sem coleta de dados</td></tr>
-  <tr><td><strong>Emissores de cartão</strong> (por exemplo, o Nubank)</td><td>Clientes que pagam a fatura em dia</td><td>Uso do CSV que o próprio banco oferece, sem acesso à conta</td></tr>
-  <tr><td><strong>FIAP e banca avaliadora</strong></td><td>Trabalho com ML aplicado e impacto social</td><td>Modelos treinados e avaliados com rigor; limitações declaradas</td></tr>
-  <tr><td><strong>Desenvolvedores e mantenedores</strong></td><td>Base para evoluir (outros bancos, celular)</td><td>Código revisado, testes e documentação</td></tr>
+  <tr><th style="width:26%">Relação com o produto</th><th style="width:37%">Quem</th><th>Papel</th></tr>
+  <tr><td><strong>Usa diretamente</strong></td><td>Adultos que usam cartão de crédito, como o Lucas</td><td>Abre a fatura, define o orçamento e decide as categorias</td></tr>
+  <tr><td><strong>Beneficiado indiretamente</strong></td><td>Família e dependentes de quem usa</td><td>Orçamento doméstico mais previsível</td></tr>
+  <tr><td><strong>Necessário para funcionar</strong></td><td>Emissor do cartão que oferece a fatura em CSV (hoje, o Nubank)</td><td>Fonte dos dados. O app usa o arquivo que o próprio banco oferece, sem integração nem acordo com ele</td></tr>
+  <tr><td><strong>Necessário para funcionar</strong></td><td>Mantenedores do software (hoje, o autor)</td><td>Código, testes, documentação e regras de categoria</td></tr>
+  <tr><td><strong>Canal de difusão possível</strong></td><td>Educadores financeiros, escolas, ONGs</td><td>Usar o app em oficinas com a fatura do próprio participante</td></tr>
+  <tr><td><strong>Interesse público relacionado, sem parceria</strong></td><td>Banco Central (cidadania financeira), Procons e Idec</td><td>Objetivos alinhados, sem relação formal com o projeto</td></tr>
 </table>
+</section>
 
 <section class="evita-quebra"><h2>Objetivos de Desenvolvimento Sustentável (ODS)</h2>
 <div class="ods evita-quebra">
-  <div class="cartao"><h3>ODS 1: Erradicação da pobreza</h3><p class="pequeno"><strong>Meta 1.4:</strong> direitos iguais a recursos econômicos e acesso a serviços básicos, inclusive financeiros, em especial para os mais pobres e vulneráveis.</p><p>Ajuda a evitar a dívida cara (o rotativo a 451,7% ao ano), que empurra famílias para a inadimplência.</p></div>
-  <div class="cartao"><h3>ODS 8: Trabalho decente e crescimento econômico</h3><p class="pequeno"><strong>Meta 8.10:</strong> ampliar o acesso a serviços bancários, de seguros e financeiros para todos.</p><p>Torna o uso do cartão, o serviço financeiro mais comum, mais consciente e menos arriscado.</p></div>
-  <div class="cartao"><h3>ODS 10: Redução das desigualdades</h3><p class="pequeno"><strong>Meta 10.2:</strong> empoderar e promover a inclusão social e econômica de todos, independentemente de idade, gênero, raça ou condição econômica.</p><p>Ferramenta gratuita, em português simples e acessível pelo teclado, que não exige conhecimento técnico nem dados pessoais.</p></div>
+  <div class="cartao"><h3>ODS 10: Redução das desigualdades</h3><p class="pequeno"><strong>Meta 10.2:</strong> empoderar e promover a inclusão social e econômica de todos, independentemente de idade, gênero, raça ou condição econômica.</p><p>Dá a qualquer pessoa, de graça e sem senha de banco, uma análise da própria fatura que costuma depender de planilha, de conhecimento financeiro ou de apps que pedem acesso à conta. Contribuição potencial.</p></div>
 </div>
+<p class="pequeno"><strong>Considerados e não reivindicados:</strong> o ODS 1 (meta 1.4) e o ODS 8 (meta 8.10) tratam de ampliar o acesso a serviços financeiros, e o app não amplia esse acesso; o ODS 4, porque o app não é uma ação de educação.</p>
 </section>
 
 <section class="evita-quebra"><h2>Impacto esperado</h2>
@@ -144,8 +143,9 @@
   <div><strong>Clareza</strong><br>Ver onde o dinheiro foi</div><span>→</span>
   <div><strong>Antecipação</strong><br>Saber, no meio do mês, quanto a fatura vai fechar</div><span>→</span>
   <div><strong>Decisão a tempo</strong><br>Ajustar antes do fechamento</div><span>→</span>
-  <div><strong>Menos dívida cara</strong><br>Menos rotativo, atraso, juros e negativação</div>
+  <div><strong>Menos dívida cara (potencial)</strong><br>Menos rotativo, atraso e juros, ainda não medido</div>
 </div>
+<p class="pequeno"><strong>Contribuição potencial, não impacto comprovado:</strong> nada disso foi medido com pessoas reais, e o projeto não afirma que reduz a inadimplência.</p>
 <p><strong>Indicadores propostos para um piloto</strong> (ainda não medidos com pessoas reais):</p>
 <table class="evita-quebra">
   <tr><th style="width:45%">Indicador</th><th>Como medir</th></tr>
@@ -155,7 +155,7 @@
   <tr><td>Juros, multa e IOF por atraso pagos</td><td>Linha "Juros, multas e IOF" do app, antes e depois</td></tr>
   <tr><td>Erro da previsão com faturas reais</td><td>Previsão comparada ao valor final, com consentimento</td></tr>
 </table>
-<p><strong>Escala:</strong> o app é gratuito e roda no computador da pessoa, sem servidor, então o custo de levar a mais gente é baixo. Os próximos passos são aceitar faturas de outros bancos e fazer uma versão para o celular.</p>
+<p><strong>Escala:</strong> o app é gratuito e roda no computador da pessoa, sem servidor externo, então o custo de levar a mais gente é baixo. Os próximos passos são aceitar faturas de outros bancos e fazer uma versão para o celular.</p>
 </section>
 
 <section class="evita-quebra"><h2>Limitações</h2>
@@ -164,18 +164,20 @@
   <li>A previsão por aprendizado de máquina <strong>não foi melhor que uma conta simples</strong> com o histórico da pessoa. A vantagem sobre a estimativa pelo ritmo vem de usar esse histórico.</li>
   <li>A confiança das sugestões de categoria <strong>não é exata</strong> e tende a ser otimista.</li>
   <li>Por enquanto, o app lê só faturas do Nubank e roda no computador.</li>
+  <li>O processamento local não garante sozinho que nenhum dado saia do computador: pastas sincronizadas e backups seguem a configuração da pessoa. O app não tem senha própria nem criptografia (detalhes em <em>docs/PRIVACIDADE_LGPD.md</em>).</li>
 </ul>
 
 </section>
 <h2>Fontes</h2>
 <ol class="fontes">
-  <li>CNC, Pesquisa de Endividamento e Inadimplência do Consumidor (Peic), julho de 2026. Agência Brasil, 06/08/2026. agenciabrasil.ebc.com.br/economia/noticia/2026-08/cnc-endividamento-das-familias-sobe-para-82-mas-inadimplencia-cai</li>
+  <li>CNC, Pesquisa de Endividamento e Inadimplência do Consumidor (Peic), julho de 2026, resultados nacionais no relatório da Fecomércio-SC. fecomercio-sc.com.br/wp-content/uploads/2026/08/202607_PEIC.pdf</li>
+  <li>CNC, Peic, julho de 2026 (cartão, 85,3%). Agência Brasil, 06/08/2026. agenciabrasil.ebc.com.br/economia/noticia/2026-08/cnc-endividamento-das-familias-sobe-para-82-mas-inadimplencia-cai</li>
   <li>Serasa Experian, Indicador de Inadimplência do Consumidor, setembro de 2026. serasaexperian.com.br/conteudos/indicadores-economicos/</li>
   <li>Banco Central do Brasil, estatísticas de crédito de setembro de 2026, divulgadas em 29/10/2026. WSCOM, 30/10/2026. wscom.com.br/economia/2026/10/30/juro-do-rotativo-do-cartao-de-credito-sobe-para-4517-ao-ano-em-setembro-aponta-banco-central/</li>
   <li>Lei nº 14.690, de 3 de outubro de 2023, art. 28, § 1º. planalto.gov.br/ccivil_03/_ato2023-2026/2023/lei/l14690.htm</li>
   <li>CNDL/SPC Brasil e Offerwise, pesquisa sobre o uso do cartão de crédito, 600 internautas das 27 capitais, coleta de 2 a 9/01/2026, publicada em 23/04/2026. cndl.org.br/varejosa/58-dos-consumidores-nao-controlam-gastos-com-cartao-de-credito-aponta-cndl-spc-brasil/</li>
   <li>Banco Central e FGC, letramento e inclusão financeira de adultos (metodologia OCDE/INFE), março e abril de 2023. Agência Gov, 21/11/2023. agenciagov.ebc.com.br/noticias/202311/inclusao-financeira-do-brasileiro-avanca-mas-letramento-financeiro-ainda-pode-melhorar</li>
-  <li>Nações Unidas no Brasil, ODS 1, 8 e 10. brasil.un.org/pt-br/sdgs</li>
+  <li>Nações Unidas no Brasil, ODS 10. brasil.un.org/pt-br/sdgs</li>
 </ol>
 
 </body>

@@ -196,11 +196,15 @@ Para rodar de novo: abra o notebook na pasta `notebooks/` e execute tudo. Ele us
   - **Faixa provável:** cobre 79,0% dos casos no total, e entre 77,2% e 81,2% por faixa do ciclo.
   - **Casos fora do treino:** nenhum dos 14.120 casos de teste.
 - **Limitação principal:** todas as pessoas vêm do mesmo gerador. O erro real, com pessoas reais, pode ser maior.
+- **Dataset em CSV:** o notebook grava os lançamentos fictícios e as tabelas de treino e teste em `notebooks/dados_previsao/`, lê de volta e confere que são idênticas às geradas. A pasta fica fora do git, como todo CSV.
 
 ## Demonstração e limitações
 
 - **Apresentar o app só com dados fictícios:** [docs/DEMONSTRACAO.md](docs/DEMONSTRACAO.md). O `abrir_demonstracao.bat` abre o app numa pasta só da demonstração, sem tocar nos dados reais, e prepara a base "Faturas simuladas" com 13 meses de faturas fictícias (`ferramentas/preparar_demonstracao.py`).
 - **O que o app não garante** (dados fictícios, confiança não calibrada, modelo que não ganha de uma conta simples, acessibilidade verificada e não verificada): [docs/LIMITACOES.md](docs/LIMITACOES.md).
+- **Contexto social, persona, ODS e impacto:** [docs/CONTEXTO_E_IMPACTO.md](docs/CONTEXTO_E_IMPACTO.md).
+- **Privacidade, LGPD e vieses:** [docs/PRIVACIDADE_LGPD.md](docs/PRIVACIDADE_LGPD.md).
+- **Origem:** o projeto nasceu como uso pessoal e também foi apresentado como trabalho de Machine Learning na FIAP (Global Solution 2026.2).
 
 ## Privacidade
 
