@@ -4,7 +4,7 @@ Texto-fonte da proposta executiva da Global Solution 2026.2 (CitizenTech). Os n�
 
 ## 1. O problema
 
-**Recorte:** adultos que usam o cartão de crédito como principal meio de pagamento, em áreas urbanas do Brasil. Eles veem a fatura como uma lista de compras, mas não sabem para onde foi o dinheiro nem quanto o mês vai fechar.
+**Recorte:** adultos com computador que usam o cartão de crédito como principal meio de pagamento, em capitais e grandes centros urbanos do Brasil (as áreas de maior densidade populacional). Eles veem a fatura como uma lista de compras, mas não sabem para onde foi o dinheiro nem quanto o mês vai fechar.
 
 ### Evidências
 
@@ -100,7 +100,7 @@ O **Raio-X da fatura** é um aplicativo gratuito que roda no computador da pesso
 
 **Acessibilidade:**
 - **Pouca conectividade:**
-  - **o que já existe:** o app roda inteiro no computador e o código dele não faz nenhuma chamada à internet. Isso não foi testado com a rede desligada;
+  - **o que já existe:** o app roda inteiro no computador e o código dele não faz nenhuma chamada à internet, e o envio de estatísticas de uso do Streamlit está desligado. O autor confirma o uso sem rede; não há teste automatizado disso;
   - **o limite:** a instalação inicial precisa de internet (Python e bibliotecas).
 - **Pouco letramento digital:**
   - **o que já existe:** os textos estão em português simples; o app explica cada número e mostra avisos quando não há dados suficientes;
