@@ -1,0 +1,2 @@
+# Arquivos .bat sempre com CRLF, para o cmd do Windows.
+*.bat text eol=crlf

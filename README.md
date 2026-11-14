@@ -4,7 +4,7 @@ App local (Streamlit) que lê o CSV da fatura do cartão Nubank e mostra para on
 
 ## Como abrir
 
-1. Uma vez só: `py -m pip install -r requirements.txt`
+1. Uma vez só: `py -m pip install -r requirements.txt` (se o comando `py` não existir no seu computador, use `python -m pip install -r requirements.txt`). O `abrir_app.bat` usa sozinho o comando que funcionar (`py`, `python` ou `python3`).
 2. Dê dois cliques em `abrir_app.bat`. O navegador abre em `http://localhost:8501`.
 3. Selecione o CSV exportado do Nubank (ex.: `Nubank_2026-11-25.csv`).
 

@@ -23,5 +23,7 @@ sugestoes_rejeitadas.json
 *.json.tmp
 rotulados_*.csv
 # Entrega da Global Solution: o ZIP do notebook leva os CSVs fictícios, que ficam fora do git.
+# Pasta com os 3 arquivos para anexar no Portal FIAP ON (cópias; o ZIP leva os CSVs).
+ENTREGA_FINAL/
 entrega_gs/
 assets/
