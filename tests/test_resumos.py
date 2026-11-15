@@ -148,6 +148,45 @@ def test_pagamento_e_saldo_anterior_nao_aparecem_no_resumo():
 
 # ---------------------------------------------------------------- casos-limite
 
+def projecao_do_texto(texto, hoje):
+    fatura = ft.montar_fatura(ft.ler_csv(texto.encode('utf-8')))
+    datas = ft.ciclo(date(2026, 11, 25))
+    return ft.projecao(fatura, datas['inicio'], datas['ultimo_dia'], hoje)
+
+
+def test_fatura_estimada_de_fatura_paga_em_dia_nao_desconta_o_pagamento():
+    # Fatura anterior paga em dia: o arquivo traz o pagamento, mas não o saldo que ele quita.
+    texto = 'date,title,amount\n2026-10-22,Pagamento recebido,"- 3.000,00"\n2026-10-23,Restaurante Teste,"100,00"\n2026-10-24,Mercado Teste,"200,00"\n'
+    resultado = projecao_do_texto(texto, date(2026, 10, 27))
+    assert resultado['pagamentos_fora'] == -300000
+    assert resultado['fatura_atual'] == 30000
+    assert resultado['fatura_atual'] == resultado['atual']
+    assert resultado['fatura_estimada'] == resultado['projetado']
+    assert resultado['fatura_estimada'] >= resultado['atual'] > 0
+
+
+def test_fatura_estimada_com_saldo_anterior_no_arquivo_continua_descontando_o_pagamento():
+    # Fatura anterior paga com atraso e só em parte: sobram 400,00 do saldo, mais os 100,00 de gasto.
+    texto = 'date,title,amount\n2026-10-20,Valor pendente do mês anterior,"1.000,00"\n2026-10-22,Pagamento recebido,"- 600,00"\n2026-10-23,Restaurante Teste,"100,00"\n'
+    resultado = projecao_do_texto(texto, date(2026, 11, 17))
+    assert resultado['pagamentos_fora'] == 0
+    assert resultado['fatura_atual'] == 50000
+    assert resultado['fatura_estimada'] == 50000
+
+
+def test_fatura_estimada_olha_so_o_que_ja_aconteceu_ate_a_data():
+    texto = 'date,title,amount\n2026-10-19,Restaurante Teste,"100,00"\n2026-10-26,Valor pendente do mês anterior,"1.000,00"\n2026-10-28,Pagamento recebido,"- 1.000,00"\n'
+    # Antes do saldo e do pagamento: só o gasto.
+    antes = projecao_do_texto(texto, date(2026, 10, 25))
+    assert (antes['fatura_atual'], antes['pagamentos_fora']) == (10000, 0)
+    # Saldo lançado, pagamento ainda não: o saldo pesa na fatura.
+    entre = projecao_do_texto(texto, date(2026, 10, 27))
+    assert (entre['fatura_atual'], entre['pagamentos_fora']) == (110000, 0)
+    # Saldo e pagamento no arquivo: um quita o outro.
+    depois = projecao_do_texto(texto, date(2026, 10, 29))
+    assert (depois['fatura_atual'], depois['pagamentos_fora']) == (10000, 0)
+
+
 def test_estorno_dentro_do_ciclo_fica_fora_do_ritmo():
     texto = 'date,title,amount\n2026-10-20,Ifd*Loja Teste,"100,00"\n2026-10-21,Estorno de compra (iFood),"- 100,00"\n2026-10-22,Restaurante Teste,"50,00"\n'
     fatura = ft.montar_fatura(ft.ler_csv(texto.encode('utf-8')))

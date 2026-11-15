@@ -170,6 +170,20 @@ def test_fatura_estimada_inclui_saldo_nao_pago(regras):
         assert not any('fatura' in r.lower() and 'estimad' in r.lower() for r in valores)
 
 
+def test_fatura_estimada_de_fatura_paga_em_dia_nao_fica_negativa(regras):
+    conteudo = 'date,title,amount\n2026-10-22,Pagamento recebido,"- 3.000,00"\n2026-10-23,Restaurante Teste,"100,00"\n'.encode('utf-8')
+    app = abrir_com_exemplo(conteudo=conteudo)
+    app.sidebar.date_input(key='hoje').set_value(date(2026, 11, 17))
+    app.run()
+    assert not app.exception
+    assert metricas(app)['Fatura estimada no fechamento'] == 'R$ 100,00'
+    legenda = [texto.value for texto in app.caption if 'A fatura estimada é' in texto.value]
+    assert len(legenda) == 1
+    assert 'não entra nessa conta' in legenda[0]
+    assert '3.000,00' in legenda[0]
+    assert 'incluindo saldo anterior e pagamentos' not in legenda[0]
+
+
 def test_valores_em_reais_nao_viram_latex(regras):
     app = abrir_com_exemplo()
     elementos = list(app.markdown) + list(app.caption) + list(app.warning) + list(app.info) + list(app.success) + list(app.error)

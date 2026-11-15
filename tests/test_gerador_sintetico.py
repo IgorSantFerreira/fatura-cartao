@@ -53,6 +53,27 @@ def test_treze_faturas_que_o_app_le_com_datas_dentro_do_ciclo(geradas):
         assert 35 <= len(fatura) <= 70, nome
 
 
+def test_fatura_estimada_das_faturas_geradas_nunca_fica_abaixo_do_gasto(geradas):
+    # A maioria das faturas geradas é paga em dia: traz o pagamento da fatura anterior, sem a linha de saldo.
+    pasta, faturas, gabarito = geradas
+    pagas_em_dia = 0
+    for nome, fatura in faturas.items():
+        ciclo = ft.ciclo(ft.vencimento_do_nome(nome))
+        for dia in [ciclo['inicio'] + (ciclo['ultimo_dia'] - ciclo['inicio']) // 2, ciclo['ultimo_dia']]:
+            resultado = ft.projecao(fatura, ciclo['inicio'], ciclo['ultimo_dia'], dia)
+            assert resultado['fatura_estimada'] >= resultado['atual'] > 0, (nome, dia)
+        if resultado['pagamentos_fora'] < 0:
+            pagas_em_dia = pagas_em_dia + 1
+            assert resultado['fatura_estimada'] == resultado['projetado'], nome
+    assert pagas_em_dia >= 5
+    # A fatura da demonstração, na data do roteiro: o gasto até ali é de R$ 1.472,50.
+    ciclo = ft.ciclo(date(2026, 10, 25))
+    da_demonstracao = ft.projecao(faturas['Nubank_2026-10-25.csv'], ciclo['inicio'], ciclo['ultimo_dia'], date(2026, 10, 5))
+    assert da_demonstracao['atual'] == 147250
+    assert da_demonstracao['pagamentos_fora'] == -311477
+    assert da_demonstracao['fatura_estimada'] == da_demonstracao['projetado']
+
+
 def test_gabarito_bate_com_os_csvs(geradas):
     pasta, faturas, gabarito = geradas
     assert len(gabarito) == sum(len(fatura) for fatura in faturas.values())

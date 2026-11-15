@@ -62,6 +62,7 @@ Este documento reúne o que o "Raio-X da fatura" **não** garante. Os números v
 ## 4. Outras estimativas do app
 
 - **Projeção pelo ritmo:** supõe que o gasto do dia a dia continua igual até o fechamento. Erra mais no começo do ciclo.
+- **Fatura estimada no fechamento:** o pagamento só é descontado quando o arquivo traz também o saldo da fatura anterior (a linha que o banco lança quando ela não foi paga em dia). Sem essa linha, o app entende que o pagamento quitou a fatura anterior e não o desconta. Por isso, um pagamento antecipado da fatura atual, ou um pagamento maior que o devido, não reduz a estimativa.
 - **Cobranças fixas:** um gasto é considerado fixo quando se repete com o mesmo valor. Uma cobrança que muda de valor todo mês não é reconhecida.
 - **Parcelas futuras:** o app supõe parcelas de mesmo valor (a última pode diferir por centavos).
 - **"Fora do seu padrão":** compara com a média das faturas completas anteriores. Com uma ou duas faturas, a média é instável.

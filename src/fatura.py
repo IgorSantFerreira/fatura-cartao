@@ -720,6 +720,14 @@ def projecao(fatura, inicio, ultimo_dia, hoje):
     ritmo_total = int(fatura.loc[janela, 'centavos'].sum())
     atual_total = int(fatura.loc[gasto_ate_hoje, 'centavos'].sum())
     fatura_atual = int(fatura.loc[ate_hoje, 'centavos'].sum())
+    # O pagamento quita a fatura anterior. Ele só entra na conta desta fatura quando o saldo que ele quita
+    # também está no arquivo (linha de saldo anterior, que o banco lança quando a fatura não foi paga em dia).
+    # Sem essa linha, descontar o pagamento deixaria a fatura estimada menor do que o gasto, até negativa.
+    tem_saldo_anterior = bool((ate_hoje & (fatura['categoria'] == SALDO_ANTERIOR)).any())
+    pagamentos_fora = 0
+    if not tem_saldo_anterior:
+        pagamentos_fora = int(fatura.loc[ate_hoje & (fatura['categoria'] == PAGAMENTO), 'centavos'].sum())
+        fatura_atual = fatura_atual - pagamentos_fora
     a_mais_total = dividir_arredondando(ritmo_total * dias_restantes, dias_decorridos)
 
     nomes = []
@@ -752,6 +760,7 @@ def projecao(fatura, inicio, ultimo_dia, hoje):
         , 'projetado': atual_total + a_mais_total
         , 'fatura_atual': fatura_atual
         , 'fatura_estimada': fatura_atual + a_mais_total
+        , 'pagamentos_fora': pagamentos_fora
         , 'depois_de_hoje': int((~ate_hoje).sum())
         , 'por_categoria': por_categoria
     }

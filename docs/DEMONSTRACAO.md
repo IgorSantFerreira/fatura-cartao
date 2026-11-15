@@ -32,7 +32,7 @@ O que mostrar em cada aba:
 | **Classificar** | **Sugestões do modelo** para os estabelecimentos que as regras não reconhecem, com a confiança e os nomes parecidos. Aceitar, corrigir ou rejeitar: nada muda sem a pessoa decidir. |
 | **Lançamentos** | Todos os lançamentos, com categoria e tipo. |
 
-**Um número que pode confundir:** na aba "Até o fechamento", a **"Fatura estimada no fechamento"** pode aparecer negativa. Isso acontece porque ela inclui o pagamento da fatura anterior, que entra como crédito, e o saldo anterior. O gasto do mês é o **"Gasto até agora"**, e a previsão é o **"Previsto pelo modelo no fechamento"**.
+**Dois números parecidos:** na aba "Até o fechamento", a seção "Ciclo e estimativa" mostra a **"Fatura estimada no fechamento"**, que é a estimativa simples pelo ritmo de gasto. A previsão do modelo é o **"Previsto pelo modelo no fechamento"**, na seção "Previsão do fechamento". Nas faturas da demonstração pagas em dia, o pagamento da fatura anterior não entra na fatura estimada, e a legenda diz isso.
 
 Para mostrar o aviso de **histórico insuficiente**, use uma base sem histórico. Uma forma é remover as faturas guardadas em **Mês a mês → Faturas guardadas** e abrir a fatura de novo.
 

@@ -644,13 +644,25 @@ with aba_ciclo:
             coluna1.metric('Dias de compra que faltam', f'{resultado["dias_restantes"]} de {resultado["dias_total"]}')
             coluna2.metric('Ritmo do dia a dia', ft.reais(resultado['ritmo_diario']) + ' por dia')
             coluna3.metric('Fatura estimada no fechamento', ft.reais(resultado['fatura_estimada']))
+            if resultado['pagamentos_fora'] != 0:
+                explicacao_fatura = (
+                    f'A fatura estimada é o que já está na fatura ({ft.reais_md(resultado["fatura_atual"])}) mais o ritmo. '
+                    + f'O pagamento de {ft.reais_md(-resultado["pagamentos_fora"])} não entra nessa conta: '
+                    + 'ele quita a fatura anterior, e o saldo dela não está neste arquivo.'
+                )
+                if resultado['projetado'] != resultado['fatura_estimada']:
+                    explicacao_fatura = explicacao_fatura + f' Só o gasto do período ficaria em {ft.reais_md(resultado["projetado"])}.'
+            else:
+                explicacao_fatura = (
+                    f'A fatura estimada é o que já está na fatura ({ft.reais_md(resultado["fatura_atual"])}, '
+                    + 'incluindo saldo anterior e pagamentos) mais o ritmo; '
+                    + f'só o gasto do período ficaria em {ft.reais_md(resultado["projetado"])}.'
+                )
             st.caption(
                 'Estimativa simples: se o gasto do dia a dia continuar no mesmo ritmo até o fechamento. '
                 + 'Parcelas, assinaturas, juros/multas/IOF e estornos ficam fora do ritmo, porque não se repetem todo dia. '
                 + 'Lançamentos a classificar entram no ritmo. '
-                + f'A fatura estimada é o que já está na fatura ({ft.reais_md(resultado["fatura_atual"])}, '
-                + 'incluindo saldo anterior e pagamentos) mais o ritmo; '
-                + f'só o gasto do período ficaria em {ft.reais_md(resultado["projetado"])}.'
+                + explicacao_fatura
             )
             if resultado['depois_de_hoje'] > 0:
                 st.caption(
